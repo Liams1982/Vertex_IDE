@@ -1,0 +1,83 @@
+{----------------------------------------------------------------------------}
+{ Demo : Unit Converter - Convert between meters, feet, inches             }
+{----------------------------------------------------------------------------}
+Import "vcl.vtx";
+
+Enter ConverterDemo;
+
+Var
+  hValue: HWND;
+  hFromUnit: HWND;
+  hToUnit: HWND;
+  hConvertBtn: HWND;
+  hResult: HWND;
+
+{ We'll simulate combo boxes using Labels with click handlers; actual ComboBox is not fully implemented. }
+
+Proc OnControlClick(hCtrl: HWND);
+Var
+  valueStr: String;
+  value: Real;
+  fromUnit: String;
+  toUnit: String;
+  result: Real;
+Run
+  If hCtrl = hConvertBtn Then
+  Run
+    valueStr <- GetText(hValue);
+    value <- StrToFloat(valueStr);
+    
+    { Determine from/to units - in a real app we'd read from ComboBox }
+    fromUnit <- "meters";
+    toUnit <- "feet";
+
+    { Conversion logic }
+    If fromUnit = "meters" And toUnit = "feet" Then
+      result <- value * 3.28084
+    Else If fromUnit = "meters" And toUnit = "inches" Then
+      result <- value * 39.3701
+    Else If fromUnit = "feet" And toUnit = "meters" Then
+      result <- value / 3.28084
+    Else If fromUnit = "feet" And toUnit = "inches" Then
+      result <- value * 12.0
+    Else If fromUnit = "inches" And toUnit = "meters" Then
+      result <- value / 39.3701
+    Else If fromUnit = "inches" And toUnit = "feet" Then
+      result <- value / 12.0
+    Else
+      result <- value;
+
+    SetText(hResult, FloatToStr(result) + " " + toUnit);
+  Stop;
+Stop;
+
+Run
+  Window(400, 274, 120, 100);
+  SetWindowTitle("Unit Converter");
+  SetFormColor(ColorRGB(240, 240, 245));
+
+  hValue <- Edit(MainWindow, 120, 28, 40, 30);
+  SetText(hValue, "1.0");
+  SetBackColor(hValue, ColorRGB(255, 255, 230));
+
+  hFromUnit <- Label(MainWindow, 100, 25, 180, 30);
+  SetText(hFromUnit, "meters");
+  SetBackColor(hFromUnit, ColorRGB(200, 200, 220));
+
+  hToUnit <- Label(MainWindow, 100, 25, 180, 70);
+  SetText(hToUnit, "feet");
+  SetBackColor(hToUnit, ColorRGB(200, 200, 220));
+
+  hConvertBtn <- Button(MainWindow, 100, 32, 50, 130);
+  SetText(hConvertBtn, "Convert");
+  SetBackColor(hConvertBtn, ColorRGB(60, 180, 120));
+
+  hResult <- Label(MainWindow, 200, 30, 200, 130);
+  SetText(hResult, "Result: ?");
+  SetBackColor(hResult, ColorRGB(230, 230, 250));
+  SetCtrlTextColor(hResult, ColorRGB(0, 0, 150));
+
+  OnClick(@OnControlClick);
+  RunApp();
+Stop
+Exit.

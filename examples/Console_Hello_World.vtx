@@ -1,0 +1,8 @@
+Enter MyProgram;
+
+Run
+  Print("Hello, World!");
+Stop
+Exit.
+
+

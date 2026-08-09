@@ -1,0 +1,16 @@
+Enter AddDemo;
+
+Var
+  a: Integer;
+  b: Integer;
+  sum: Integer;
+
+Run
+  a <- 10;
+  b <- 20;
+  sum <- a + b;
+  Print("Sum is: ", sum);
+Stop
+Exit.
+
+

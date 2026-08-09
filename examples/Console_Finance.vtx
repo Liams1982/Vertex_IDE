@@ -1,0 +1,220 @@
+Import <iostream>;
+Import <string>;
+Import <cmath>;
+
+Enter FinanceDemo;
+
+{ ========== MATH FUNCTIONS ========== }
+
+Func Factorial(n: Integer): Integer;
+Run
+  If n <= 1 Then
+    Factorial <- 1;
+  Else
+    Factorial <- n * Factorial(n - 1);
+Stop;
+
+Func Fibonacci(n: Integer): Integer;
+Run
+  If n <= 1 Then
+    Fibonacci <- n;
+  Else
+    Fibonacci <- Fibonacci(n - 1) + Fibonacci(n - 2);
+Stop;
+
+Func IsPrime(n: Integer): Boolean;
+Var
+  i: Integer;
+Run
+  If n < 2 Then
+    IsPrime <- False;
+  Else
+  Run
+    i <- 2;
+    IsPrime <- True;
+    While i * i <= n Do
+    Run
+      If n Mod i = 0 Then
+      Run
+        IsPrime <- False;
+        Break;
+      Stop;
+      i <- i + 1;
+    Stop;
+  Stop;
+Stop;
+
+{ ========== PASS-BY-REFERENCE ========== }
+
+Proc Swap(Var a: Integer; Var b: Integer);
+Var
+  temp: Integer;
+Run
+  temp <- a;
+  a <- b;
+  b <- temp;
+Stop;
+
+{ ========== OOP: BANK ACCOUNT ========== }
+
+Type
+  TAccount = Class
+  Private
+    owner: String;
+    balance: Real;
+  Public
+    accountId: Integer;
+    Constructor Create(id: Integer; ownerName: String; initialBalance: Real);
+    Proc Deposit(amount: Real);
+    Proc Withdraw(amount: Real);
+    Func GetBalance: Real;
+    Func GetOwner: String;
+    Proc SetId(newId: Integer);
+    Func GetId: Integer;
+    Proc ApplyInterest(rate: Real);
+  End;
+
+{ ========== IMPLEMENTATION ========== }
+
+Constructor TAccount.Create(id: Integer; ownerName: String; initialBalance: Real);
+Run
+  accountId <- id;
+  owner <- ownerName;
+  balance <- initialBalance;
+Stop;
+
+Proc TAccount.Deposit(amount: Real);
+Run
+  If amount > 0 Then
+    balance <- balance + amount;
+  Else
+    Print("Deposit amount must be positive");
+Stop;
+
+Proc TAccount.Withdraw(amount: Real);
+Run
+  If amount <= 0 Then
+    Print("Withdrawal amount must be positive");
+  Else If amount > balance Then
+    Print("Insufficient funds");
+  Else
+    balance <- balance - amount;
+Stop;
+
+Func TAccount.GetBalance: Real;
+Run
+  GetBalance <- balance;
+Stop;
+
+Func TAccount.GetOwner: String;
+Run
+  GetOwner <- owner;
+Stop;
+
+Proc TAccount.SetId(newId: Integer);
+Run
+  accountId <- newId;
+Stop;
+
+Func TAccount.GetId: Integer;
+Run
+  GetId <- accountId;
+Stop;
+
+Proc TAccount.ApplyInterest(rate: Real);
+Run
+  balance <- balance * (1.0 + rate / 100.0);
+Stop;
+
+{ ========== MAIN PROGRAM ========== }
+
+Const
+  MAX_ACCOUNTS = 5;
+Const
+  INTEREST_RATE = 3.5;
+
+Type
+  TStats = Record
+    total: Real;
+    avg: Real;
+    max: Real;
+    min: Real;
+  End;
+
+Var
+  accounts: Array[0..MAX_ACCOUNTS-1] Of ^TAccount;
+  i: Integer;
+  stats: TStats;
+  sum: Real;
+  pAccount: ^TAccount;
+  tempId: Integer;
+
+Func AverageBalance(accs: Array[0..MAX_ACCOUNTS-1] Of ^TAccount): Real;
+Var
+  total: Real;
+  j: Integer;
+Run
+  total <- 0.0;
+  For j <- 0 To MAX_ACCOUNTS - 1 Do
+    total <- total + accs[j]^.GetBalance;
+  AverageBalance <- total / MAX_ACCOUNTS;
+Stop;
+
+Run
+  { Create accounts }
+  accounts[0] <- New(TAccount, 101, "Alice", 1500.0);
+  accounts[1] <- New(TAccount, 102, "Bob", 2300.0);
+  accounts[2] <- New(TAccount, 103, "Charlie", 750.0);
+  accounts[3] <- New(TAccount, 104, "Diana", 3200.0);
+  accounts[4] <- New(TAccount, 105, "Eve", 1800.0);
+
+  { Operations }
+  accounts[1]^.Deposit(500.0);
+  accounts[2]^.Withdraw(200.0);
+  accounts[3]^.ApplyInterest(INTEREST_RATE);
+
+  { Swap IDs }
+  tempId <- accounts[0]^.GetId;
+  accounts[0]^.SetId(accounts[4]^.GetId);
+  accounts[4]^.SetId(tempId);
+  Print("After swap: Alice ID = ", accounts[0]^.GetId, " Eve ID = ", accounts[4]^.GetId);
+
+  { Statistics }
+  sum <- 0.0;
+  stats.min <- accounts[0]^.GetBalance;
+  stats.max <- accounts[0]^.GetBalance;
+  For i <- 0 To MAX_ACCOUNTS - 1 Do
+  Run
+    pAccount <- accounts[i];
+    sum <- sum + pAccount^.GetBalance;
+    If pAccount^.GetBalance < stats.min Then stats.min <- pAccount^.GetBalance;
+    If pAccount^.GetBalance > stats.max Then stats.max <- pAccount^.GetBalance;
+  Stop;
+  stats.total <- sum;
+  stats.avg <- AverageBalance(accounts);
+
+  { Print summary }
+  Print("=== ACCOUNT SUMMARY ===");
+  For i <- 0 To MAX_ACCOUNTS - 1 Do
+  Run
+    pAccount <- accounts[i];
+    Print("ID: ", pAccount^.GetId, " Owner: ", pAccount^.GetOwner, " Balance: $", pAccount^.GetBalance);
+  Stop;
+
+  Print("Total: $", stats.total);
+  Print("Average: $", stats.avg);
+  Print("Min: $", stats.min);
+  Print("Max: $", stats.max);
+
+  { Recursion }
+  Print("Factorial(6) = ", Factorial(6));
+  Print("Fibonacci(10) = ", Fibonacci(10));
+  Print("Is 17 prime? ", IsPrime(17));
+  Print("Is 25 prime? ", IsPrime(25));
+
+  { Cleanup }
+  For i <- 0 To MAX_ACCOUNTS - 1 Do
+    Dispose(accounts[i]);
+Stop
+Exit.
+

@@ -1,0 +1,87 @@
+Import <windows.h>;
+
+Enter WindowDemo;
+
+Var
+  hwnd: HWND;
+  msg: MSG;
+  wc: WNDCLASSEX;
+  hButton: HWND;
+
+Const
+  IDC_BUTTON = 1001;
+
+Func WndProc(hWnd: HWND; uMsg: UINT; wParam: WPARAM; lParam: LPARAM): LRESULT;
+Run
+  If uMsg = WM_DESTROY Then
+  Run
+    PostQuitMessage(0);
+    WndProc <- 0;
+  Stop
+  Else If uMsg = WM_COMMAND Then
+  Run
+    If LOWORD(wParam) = IDC_BUTTON Then
+    Run
+      MessageBox(hWnd, "Button clicked!", "Vertex Demo", MB_OK);
+      WndProc <- 0;
+    Stop
+    Else
+      WndProc <- DefWindowProc(hWnd, uMsg, wParam, lParam);
+  Stop
+  Else
+    WndProc <- DefWindowProc(hWnd, uMsg, wParam, lParam);
+Stop;
+
+Run
+  wc.cbSize <- SizeOf(WNDCLASSEX);
+  wc.style <- CS_HREDRAW Or CS_VREDRAW;
+  wc.lpfnWndProc <- @WndProc;
+  wc.cbClsExtra <- 0;
+  wc.cbWndExtra <- 0;
+  wc.hInstance <- GetModuleHandle(NULL);
+  wc.hIcon <- LoadIcon(NULL, IDI_APPLICATION);
+  wc.hCursor <- LoadCursor(NULL, IDC_ARROW);
+  wc.hbrBackground <- GetSysColorBrush(COLOR_WINDOW);
+  wc.lpszMenuName <- NULL;
+  wc.lpszClassName <- "VertexButtonClass";
+  wc.hIconSm <- LoadIcon(NULL, IDI_APPLICATION);
+  RegisterClassEx(@wc);
+
+  hwnd <- CreateWindowEx(
+    0,
+    "VertexButtonClass",
+    "Vertex with Button",
+    WS_OVERLAPPEDWINDOW,
+    CW_USEDEFAULT, CW_USEDEFAULT,
+    500, 300,
+    NULL, NULL, GetModuleHandle(NULL), NULL
+  );
+
+  hButton <- CreateWindow(
+    "BUTTON",
+    "Click Me!",
+    WS_CHILD Or WS_VISIBLE Or BS_PUSHBUTTON,
+    150, 100, 200, 60,
+    hwnd,
+    NULL,
+    GetModuleHandle(NULL),
+    NULL
+  );
+  SetWindowLong(hButton, GWL_ID, IDC_BUTTON);
+
+  ShowWindow(hwnd, SW_SHOW);
+  UpdateWindow(hwnd);
+
+  While GetMessage(@msg, NULL, 0, 0) > 0 Do
+  Run
+    TranslateMessage(@msg);
+    DispatchMessage(@msg);
+  Stop;
+Stop
+Exit.
+
+
+
+
+
+

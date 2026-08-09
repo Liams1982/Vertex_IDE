@@ -1,0 +1,210 @@
+{ Full VCL showcase + ComPort }
+Import "vcl.vtx";
+
+Enter FullDemo;
+
+Var
+  { ComPort handle }
+  hPort: Integer;
+  n: Integer;
+  data: String;
+
+  { Standard controls }
+  hTitle: HWND;
+  hPanel: HWND;
+  hGroup: HWND;
+  hLblPort: HWND;
+  hComboPort: HWND;
+  hLblBaud: HWND;
+  hEditBaud: HWND;
+  hChkAuto: HWND;
+  hRadA: HWND;
+  hRadB: HWND;
+  hList: HWND;
+  hMemo: HWND;
+  hEditSend: HWND;
+  hBtnOpen: HWND;
+  hBtnSend: HWND;
+  hBtnRead: HWND;
+  hBtnClose: HWND;
+  hBtnAdd: HWND;
+  hStatus: HWND;
+
+Proc Log(msg: String);
+Run
+  data <- GetText(hMemo);
+  If Length(data) = 0 Then
+    SetText(hMemo, msg)
+  Else
+    SetText(hMemo, data + Chr(13) + Chr(10) + msg);
+  SetText(hStatus, msg);
+Stop;
+
+Proc OnBtn(hCtrl: HWND);
+Run
+  If hCtrl = hBtnOpen Then
+  Run
+    data <- GetText(hComboPort);
+    If Length(data) = 0 Then
+      data <- "COM3";
+    n <- StrToInt(GetText(hEditBaud));
+    If n <= 0 Then
+      n <- 9600;
+    hPort <- ComOpen(data, n);
+    If hPort = 0 Then
+      Log("Open failed: " + data)
+    Else
+      Log("Opened " + data + " @ " + IntToStr(n));
+  Stop;
+
+  If hCtrl = hBtnSend Then
+  Run
+    If hPort = 0 Then
+      Log("Port not open")
+    Else
+    Run
+      data <- GetText(hEditSend);
+      n <- ComWrite(hPort, data);
+      Log("Wrote " + IntToStr(n) + " bytes");
+    Stop;
+  Stop;
+
+  If hCtrl = hBtnRead Then
+  Run
+    If hPort = 0 Then
+      Log("Port not open")
+    Else
+    Run
+      n <- ComBytesAvailable(hPort);
+      data <- ComRead(hPort, 256);
+      If Length(data) = 0 Then
+        Log("No data (queue=" + IntToStr(n) + ")")
+      Else
+        Log("RX: " + data);
+    Stop;
+  Stop;
+
+  If hCtrl = hBtnClose Then
+  Run
+    If hPort <> 0 Then
+    Run
+      ComClose(hPort);
+      hPort <- 0;
+      Log("Port closed");
+    Stop;
+  Stop;
+
+  If hCtrl = hBtnAdd Then
+  Run
+    data <- GetText(hEditSend);
+    If Length(data) = 0 Then
+      data <- "item";
+    AddItem(hList, data);
+    Log("List item added");
+  Stop;
+
+  If hCtrl = hChkAuto Then
+  Run
+    If GetChecked(hChkAuto) <> 0 Then
+      Log("Auto-scroll ON")
+    Else
+      Log("Auto-scroll OFF");
+  Stop;
+
+  If (hCtrl = hRadA) Or (hCtrl = hRadB) Then
+  Run
+    If GetChecked(hRadA) <> 0 Then
+      Log("Mode A selected")
+    Else
+      Log("Mode B selected");
+  Stop;
+Stop;
+
+Run
+  // --- FORM START ---
+  Window(560, 521, 120, 100);
+  SetWindowTitle("Vertex Full Component Demo");
+  SetFormColor(ColorRGB(240, 244, 248));
+
+  hTitle <- Label(MainWindow, 520, 22, 16, 10);
+  SetText(hTitle, "Vertex VCL - all controls + ComPort");
+  SetCtrlTextColor(hTitle, ColorRGB(20, 60, 120));
+
+  { Left panel }
+  hPanel <- Panel(MainWindow, 250, 200, 16, 40);
+  SetBackColor(hPanel, ColorRGB(255, 255, 255));
+
+  hLblPort <- Label(MainWindow, 80, 20, 28, 50);
+  SetText(hLblPort, "Port:");
+
+  hComboPort <- ComboBox(MainWindow, 140, 120, 110, 48);
+  AddItem(hComboPort, "COM1");
+  AddItem(hComboPort, "COM3");
+  AddItem(hComboPort, "COM5");
+  SetItemIndex(hComboPort, 1);
+
+  hLblBaud <- Label(MainWindow, 80, 20, 28, 82);
+  SetText(hLblBaud, "Baud:");
+
+  hEditBaud <- Edit(MainWindow, 140, 28, 110, 80);
+  SetText(hEditBaud, "9600");
+
+  hChkAuto <- CheckBox(MainWindow, 180, 24, 28, 118);
+  SetText(hChkAuto, "Auto log");
+  SetChecked(hChkAuto, 1);
+
+  hRadA <- Radio(MainWindow, 100, 24, 28, 148);
+  SetText(hRadA, "Mode A");
+  SetChecked(hRadA, 1);
+
+  hRadB <- Radio(MainWindow, 100, 24, 140, 148);
+  SetText(hRadB, "Mode B");
+
+  { Group with list }
+  hGroup <- GroupBox(MainWindow, 250, 200, 290, 40);
+  SetText(hGroup, "Items");
+
+  hList <- ListBox(MainWindow, 220, 120, 305, 65);
+  AddItem(hList, "Alpha");
+  AddItem(hList, "Beta");
+  AddItem(hList, "Gamma");
+
+  hBtnAdd <- Button(MainWindow, 100, 28, 305, 195);
+  SetText(hBtnAdd, "Add item");
+  SetBackColor(hBtnAdd, ColorRGB(70, 130, 180));
+  SetCtrlTextColor(hBtnAdd, ColorRGB(255, 255, 255));
+
+  { Send line }
+  hEditSend <- Edit(MainWindow, 524, 28, 16, 260);
+  SetText(hEditSend, "Hello serial");
+
+  hBtnOpen <- Button(MainWindow, 80, 32, 16, 300);
+  SetText(hBtnOpen, "Open");
+  SetBackColor(hBtnOpen, ColorRGB(46, 139, 87));
+  SetCtrlTextColor(hBtnOpen, ColorRGB(255, 255, 255));
+
+  hBtnSend <- Button(MainWindow, 80, 32, 110, 300);
+  SetText(hBtnSend, "Send");
+
+  hBtnRead <- Button(MainWindow, 80, 32, 204, 300);
+  SetText(hBtnRead, "Read");
+
+  hBtnClose <- Button(MainWindow, 80, 32, 298, 300);
+  SetText(hBtnClose, "Close");
+  SetBackColor(hBtnClose, ColorRGB(178, 34, 34));
+  SetCtrlTextColor(hBtnClose, ColorRGB(255, 255, 255));
+
+  { Log memo }
+  hMemo <- Memo(MainWindow, 520, 90, 16, 350);
+  SetText(hMemo, "Ready.");
+  SetBackColor(hMemo, ColorRGB(30, 30, 30));
+  SetCtrlTextColor(hMemo, ColorRGB(180, 255, 180));
+
+  hStatus <- Label(MainWindow, 520, 20, 16, 448);
+  SetText(hStatus, "Status: idle");
+
+  OnClick(@OnBtn);
+  RunApp();
+  // --- FORM END ---
+Stop
+Exit.

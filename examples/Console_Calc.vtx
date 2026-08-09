@@ -1,0 +1,53 @@
+{----------------------------------------------------------------------------}
+{ Console Calculator - Input, Print, and Asm for integer conversion         }
+{ No escaped quotes in Asm – uses separate Print for output                }
+{----------------------------------------------------------------------------}
+
+Enter ConsoleCalc;
+
+Var
+  aStr: String;
+  bStr: String;
+  a: Integer;
+  b: Integer;
+  sum: Integer;
+  diff: Integer;
+  prod: Integer;
+  divInt: Integer;
+
+Run
+  Print("Enter first number: ");
+  Input(aStr);
+  Asm "a = std::stoi(aStr);";
+
+  Print("Enter second number: ");
+  Input(bStr);
+  Asm "b = std::stoi(bStr);";
+
+  sum <- a + b;
+  diff <- a - b;
+  prod <- a * b;
+
+  If b <> 0 Then
+    divInt <- a / b
+  Else
+    divInt <- 0;
+
+  Print("");
+  Print("Results:");
+
+  Print("  Sum:        ", sum);
+  Print("  Difference: ", diff);
+  Print("  Product:    ", prod);
+
+  If b <> 0 Then
+    Print("  Quotient:   ", divInt)
+  Else
+    Print("  Quotient:   division by zero (not allowed)");
+
+  Print("");
+  Print("Press Enter to exit...");
+  Input(aStr);
+
+Stop
+Exit.
