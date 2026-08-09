@@ -1,1 +1,56 @@
+# Build outputs (keep vertexc.exe)
+*.o
+*.obj
+*.a
+*.lib
+*.dll
+*.out
+output.cpp
+*.cpp.bak
 
+# Ignore other executables, but keep vertexc.exe
+*.exe
+!vertexc.exe
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.eggs/
+dist/
+build/
+venv/
+.venv/
+env/
+
+# Local IDE / tool config
+vertex_ide.json
+*.local.json
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+ehthumbs.db
+
+# Editor leftovers
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Logs and temp
+*.log
+*.tmp
+*.temp
+*.bak
+~$*
+
+# Example build artifacts
+examples/*.exe
+examples/output.cpp
