@@ -1,4 +1,3 @@
-Vertex
 Vertex is a Pascal-inspired programming language that compiles to modern C++.
 This repository contains:
 
