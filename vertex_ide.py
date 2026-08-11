@@ -846,15 +846,16 @@ class VertexIDE:
         row = 0
         col = 0
         for ctype, label, dw, dh, cap, icon in PALETTE:
+            # --- FIX: reduced padding and button size ---
             b = tk.Button(
                 grid_frame,
                 text=f"{icon}\n{label}",
                 bg=theme["btn_bg"], fg=theme["btn_fg"],
                 activebackground=theme["btn_active"],
                 relief=tk.FLAT,
-                font=("Segoe UI", 12, "bold"),
-                padx=6, pady=8,
-                width=9, height=4,
+                font=("Segoe UI", 12, "bold"),   # keep for icon size
+                padx=2, pady=2,                  # reduced from 6,8
+                width=7, height=2,               # reduced from 9,4
                 justify=tk.CENTER,
                 command=lambda t=ctype: self._select_tool(t)
             )
@@ -1352,11 +1353,9 @@ class VertexIDE:
             self.form_canvas.config(cursor="arrow")
             if self.selected_control:
                 ctrl = self.selected_control
-                # Cancel any pending timer from drag
                 if hasattr(self, "_update_timer") and self._update_timer:
                     self.root.after_cancel(self._update_timer)
                     self._update_timer = None
-                # Update code immediately
                 self._update_code_for_property(ctrl, "left", ctrl.x)
 
     # ---------- Form resize handles ----------
@@ -1533,7 +1532,6 @@ class VertexIDE:
         self._select_control(ctrl)
         self._select_tool("select")
         self.status(f"Placed {ctrl.name}")
-        # Insert code for the new control
         self._insert_code_for_control(ctrl)
 
     def _form_drag(self, event):
@@ -1561,7 +1559,6 @@ class VertexIDE:
             self._update_timer = self.root.after(180, lambda c=ctrl: self._update_code_for_property(c, "left", c.x))
 
     def _form_release(self, event):
-        # Cancel any pending drag update
         if hasattr(self, "_update_timer") and self._update_timer:
             self.root.after_cancel(self._update_timer)
             self._update_timer = None
@@ -1680,7 +1677,6 @@ class VertexIDE:
         elif ctrl.ctype == "memo":
             items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
                           fill=fill or "#ffffff", outline=outline, width=width))
-            # draw some fake text lines
             for i in range(3):
                 yy = y + 12 + i*16
                 if yy < y+h-8:
@@ -1708,7 +1704,6 @@ class VertexIDE:
             items.append(self.form_canvas.create_text(x+6, y+h//2,
                           text="Combo", anchor=tk.W,
                           font=("Segoe UI", 8), fill="#888"))
-            # dropdown arrow
             points = [x+w-15, y+6, x+w-6, y+6, x+w-10, y+15]
             items.append(self.form_canvas.create_polygon(points, fill="#888"))
         elif ctrl.ctype == "checkbox":
@@ -1755,7 +1750,6 @@ class VertexIDE:
                           fill=fill or "#e0e0e0", outline=outline, width=width))
             items.append(self.form_canvas.create_line(x+2, y+h-2, x+w-2, y+h-2,
                           fill="#aaa"))
-            # resize grip
             for i in range(3):
                 dx = x+w - 10 - i*4
                 dy = y+h - 10 - i*4
@@ -1765,7 +1759,6 @@ class VertexIDE:
                           text=ctrl.caption or "Status", anchor=tk.W,
                           font=("Segoe UI", 8), fill="#333"))
         else:
-            # fallback for unknown control types
             items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
                           fill=fill or "#ffffff", outline=outline, width=width))
             items.append(self.form_canvas.create_text(x+w//2, y+h//2,
@@ -2118,22 +2111,18 @@ class VertexIDE:
                 if rgb:
                     r, g, b = rgb
                     lines.append(f'  SetBackColor({ctrl.name}, ColorRGB({r}, {g}, {b}));')
-        # Ensure Var declaration exists
         self._ensure_var_decl(ctrl)
         self._insert_lines_in_form_section(lines, before_pattern=r'// --- FORM END ---')
 
     def _ensure_var_decl(self, ctrl):
-        """Add '  name: HWND;' or '  name: Integer;' under Var if missing."""
         source = self.editor.get("1.0", "end-1c")
         if re.search(r'\b' + re.escape(ctrl.name) + r'\s*:', source):
             return
         vtype = "Integer" if ctrl.ctype == "comport" else "HWND"
         decl = f'  {ctrl.name}: {vtype};'
         lines = source.splitlines()
-        # Insert after 'Var' line
         for i, line in enumerate(lines):
             if line.strip() == "Var" or line.strip().startswith("Var "):
-                # skip blank / comment lines after Var
                 j = i + 1
                 while j < len(lines) and (not lines[j].strip() or lines[j].strip().startswith("{")):
                     j += 1
@@ -2143,8 +2132,6 @@ class VertexIDE:
                 self.root.after(20, lambda: highlight(self.editor))
                 self.update_line_numbers()
                 return
-            # Also handle multi-line Var blocks - insert before first blank after other decls
-        # Fallback: no Var section — nothing to do (full Generate will create it)
 
     def _insert_lines_in_form_section(self, lines_to_insert, before_pattern=None):
         source = self.editor.get("1.0", "end-1c")
@@ -2236,7 +2223,6 @@ class VertexIDE:
                 "button": 0, "edit": 0, "label": 0, "memo": 0, "checkbox": 0, "radio": 0,
                 "listbox": 0, "combo": 0, "groupbox": 0, "panel": 0, "comport": 0,
             }
-            # Map VCL factory names to designer type ids
             vcl_to_ctype = {
                 "button": "button", "edit": "edit", "label": "label", "memo": "memo",
                 "checkbox": "checkbox", "radio": "radio", "listbox": "listbox",
@@ -2253,14 +2239,12 @@ class VertexIDE:
                 if ctype in type_counts:
                     type_counts[ctype] += 1
 
-            # ComPort: name <- ComOpen("COMx", baud);  optional design comment
             comport_pat = re.compile(
                 r'(\w+)\s*<-\s*ComOpen\s*\(\s*"([^"]*)"\s*,\s*(\d+)\s*\)\s*;',
                 re.MULTILINE | re.IGNORECASE
             )
             for match in comport_pat.finditer(source):
                 var_name, port, baud = match.groups()
-                # place non-visual ports in a cascade if no geometry comment
                 x, y, w, h = 8, 8 + 32 * type_counts.get("comport", 0), 100, 28
                 geo = re.search(
                     rf'\{{\s*ComPort\s+{re.escape(var_name)}\s+(\d+)\s+(\d+)\s+(\d+)\s+(\d+)',
@@ -2335,13 +2319,11 @@ class VertexIDE:
                 pass
 
             if not assignments:
-                # Do not wipe the designer if code has no controls yet
                 self.status("No controls in code — designer left unchanged (Generate Code first)")
                 self._redraw_all()
                 return
 
             prev_sel = self.selected_control.name if self.selected_control else None
-            # Keep designer-only controls that are not present in code
             designer_only = []
             for c in list(self.design_controls):
                 if c.name not in assignments:
@@ -2370,7 +2352,6 @@ class VertexIDE:
                 ctrl.name = var_name
                 self.design_controls.append(ctrl)
 
-            # Re-attach designer-only controls so Sync does not delete ungenerated drops
             for c in designer_only:
                 c.widget = None
                 c.selected = False
@@ -2472,7 +2453,6 @@ class VertexIDE:
             else:
                 lines.append(f'  {c.name} <- Label({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
 
-            # Common properties
             if c.caption and c.ctype not in ("listbox", "combo", "statusbar"):
                 lines.append(f'  SetText({c.name}, "{c.caption}");')
             rgb = color_rgb_from_stored(c.color or "")
@@ -2544,7 +2524,6 @@ class VertexIDE:
         if self._highlight_job:
             self.root.after_cancel(self._highlight_job)
         self._highlight_job = self.root.after(80, lambda: highlight(self.editor))
-        # live suggestions
         try:
             self._editor_keyrelease_ac(event)
         except Exception:
@@ -3042,7 +3021,6 @@ class VertexIDE:
         choice = self._ac_list.get(sel[0])
         word = self._current_word()
         if word:
-            # delete current word and insert completion
             idx = self.editor.index("insert")
             start = self.editor.index(f"{idx} - {len(word)}c")
             self.editor.delete(start, idx)
