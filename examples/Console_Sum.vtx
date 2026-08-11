@@ -1,0 +1,17 @@
+Import "console.vtx";
+
+Enter AddCalc;
+
+Var
+  a: String;
+  b: String;
+  sum: Integer;
+
+Run
+  Print("=== Simple Addition ===");
+  Print("Enter first number: "); Input(a);
+  Print("Enter second number: "); Input(b);
+  sum <- StrToInt(a) + StrToInt(b);
+  Print("The sum is: " + IntToStr(sum));
+Stop
+Exit.

@@ -1,0 +1,167 @@
+Import "vcl.vtx";
+
+Enter ArduinoControl;
+
+Var
+  hPort: Integer;
+  i: Integer;
+  data: String;
+
+  { UI Controls }
+  hEditPort: HWND;      { now a plain Edit for manual port name }
+  hEditBaud: HWND;
+  hBtnOpen: HWND;
+
+  hBtnOn: HWND;
+  hBtnOff: HWND;
+
+  hEditSend: HWND;
+  hBtnSend: HWND;
+
+  hLog: HWND;
+
+{ ------------------------------------------------------------------ }
+{ Log procedure – appends messages to the Memo                       }
+{ ------------------------------------------------------------------ }
+Proc Log(msg: String);
+Run
+  data <- GetText(hLog);
+  If Length(data) = 0 Then
+    SetText(hLog, msg)
+  Else
+    SetText(hLog, data + Chr(13) + Chr(10) + msg);
+Stop;
+
+{ ------------------------------------------------------------------ }
+{ Send the current command from the edit box                         }
+{ ------------------------------------------------------------------ }
+Proc SendCommand();
+Run
+  If hPort = 0 Then
+    Log("ERROR: Open a port first")
+  Else
+  Run
+    data <- GetText(hEditSend);
+    If Length(data) = 0 Then
+      Log("ERROR: Nothing to send")
+    Else
+    Run
+      ComWrite(hPort, data + Chr(10));
+      Log("Sent: " + data);
+    Stop;
+  Stop;
+Stop;
+
+{ ------------------------------------------------------------------ }
+{ Global click handler                                               }
+{ ------------------------------------------------------------------ }
+Proc OnBtn(hCtrl: HWND);
+Run
+  { --- Open / Close button --- }
+  If hCtrl = hBtnOpen Then
+  Run
+    If hPort = 0 Then
+    Run
+      data <- GetText(hEditPort);
+      If Length(data) = 0 Then
+        data <- "COM3";
+
+      i <- StrToInt(GetText(hEditBaud));
+      If i <= 0 Then
+        i <- 9600;
+
+      hPort <- ComOpen(data, i);
+      If hPort = 0 Then
+        Log("Open failed: " + data)
+      Else
+      Run
+        Log("Opened " + data + " @ " + IntToStr(i));
+        SetText(hBtnOpen, "Close");
+      Stop;
+    Stop
+    Else
+    Run
+      ComClose(hPort);
+      hPort <- 0;
+      Log("Port closed");
+      SetText(hBtnOpen, "Open");
+    Stop;
+  Stop
+
+  { --- LED ON: set command, delay 500ms, then auto‑send --- }
+  Else If hCtrl = hBtnOn Then
+  Run
+    SetText(hEditSend, "LEDON");
+    Log("Command set: LEDON (sending in 0.5s...)");
+    Asm "Sleep(500);";
+    SendCommand();
+  Stop
+
+  { --- LED OFF: set command, delay 500ms, then auto‑send --- }
+  Else If hCtrl = hBtnOff Then
+  Run
+    SetText(hEditSend, "LEDOFF");
+    Log("Command set: LEDOFF (sending in 0.5s...)");
+    Asm "Sleep(500);";
+    SendCommand();
+  Stop
+
+  { --- Send button: send immediately without delay --- }
+  Else If hCtrl = hBtnSend Then
+  Run
+    SendCommand();
+  Stop;
+Stop;
+
+{ ------------------------------------------------------------------ }
+{ Main program                                                       }
+{ ------------------------------------------------------------------ }
+Run
+  { Create main window }
+  Window(350, 230, 120, 100);
+  SetWindowTitle("Vertex LED Control");
+  SetFormColor(ColorRGB(240, 244, 248));
+
+  { ------ Row 1: Port and Baud (y=18) ------ }
+  hEditPort <- Edit(MainWindow, 80, 24, 15, 18);
+  SetText(hEditPort, "COM3");
+
+  hEditBaud <- Edit(MainWindow, 50, 24, 110, 18);
+  SetText(hEditBaud, "9600");
+
+  hBtnOpen <- Button(MainWindow, 60, 24, 175, 18);
+  SetText(hBtnOpen, "Open");
+  SetBackColor(hBtnOpen, ColorRGB(46, 139, 87));
+  SetCtrlTextColor(hBtnOpen, ColorRGB(255, 255, 255));
+
+  { ------ Row 2: LED commands (y=55) ------ }
+  hBtnOn <- Button(MainWindow, 80, 30, 40, 55);
+  SetText(hBtnOn, "LED ON");
+  SetBackColor(hBtnOn, ColorRGB(46, 139, 87));
+  SetCtrlTextColor(hBtnOn, ColorRGB(255, 255, 255));
+
+  hBtnOff <- Button(MainWindow, 80, 30, 160, 55);
+  SetText(hBtnOff, "LED OFF");
+  SetBackColor(hBtnOff, ColorRGB(178, 34, 34));
+  SetCtrlTextColor(hBtnOff, ColorRGB(255, 255, 255));
+
+  { ------ Row 3: Edit box + Send button (y=90) ------ }
+  hEditSend <- Edit(MainWindow, 220, 24, 15, 90);
+  SetText(hEditSend, "Hello");
+
+  hBtnSend <- Button(MainWindow, 60, 24, 245, 90);
+  SetText(hBtnSend, "Send");
+  SetBackColor(hBtnSend, ColorRGB(70, 130, 180));
+  SetCtrlTextColor(hBtnSend, ColorRGB(255, 255, 255));
+
+  { ------ Row 4: Log memo (y=125, height=80) ------ }
+  hLog <- Memo(MainWindow, 300, 80, 15, 125);
+  SetText(hLog, "Enter port name and click Open.");
+  SetBackColor(hLog, ColorRGB(30, 30, 30));
+  SetCtrlTextColor(hLog, ColorRGB(180, 255, 180));
+
+  { ------ Hook everything up ------ }
+  OnClick(@OnBtn);
+  RunApp();
+Stop
+Exit.
