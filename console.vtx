@@ -1,0 +1,153 @@
+{------------------------------------------------------------------------------}
+{ console.vtx - Vertex Console Library                                         }
+{ Provides console I/O and conversion functions                                }
+{------------------------------------------------------------------------------}
+
+Func StrToInt(s: String): Integer;
+Var
+  result: Integer;
+Run
+  Asm "result = std::stoi(s);";
+  StrToInt <- result;
+Stop;
+
+Func IntToStr(value: Integer): String;
+Var
+  result: String;
+Run
+  Asm "result = std::to_string(value);";
+  IntToStr <- result;
+Stop;
+
+Func StrToFloat(s: String): Real;
+Var
+  result: Real;
+Run
+  Asm "result = std::stod(s);";
+  StrToFloat <- result;
+Stop;
+
+Func FloatToStr(value: Real): String;
+Var
+  result: String;
+Run
+  Asm "result = std::to_string(value);";
+  FloatToStr <- result;
+Stop;
+
+Func Length(s: String): Integer;
+Var
+  result: Integer;
+Run
+  Asm "result = (int)s.length();";
+  Length <- result;
+Stop;
+
+Func Chr(code: Integer): Char;
+Var
+  result: Char;
+Run
+  Asm "result = (char)code;";
+  Chr <- result;
+Stop;
+
+Func Ord(c: Char): Integer;
+Var
+  result: Integer;
+Run
+  Asm "result = (int)(unsigned char)c;";
+  Ord <- result;
+Stop;
+
+Func Upper(s: String): String;
+Var
+  result: String;
+Run
+  Asm "for (auto& c : s) c = toupper(c); result = s;";
+  Upper <- result;
+Stop;
+
+Func Lower(s: String): String;
+Var
+  result: String;
+Run
+  Asm "for (auto& c : s) c = tolower(c); result = s;";
+  Lower <- result;
+Stop;
+
+Func Trim(s: String): String;
+Var
+  result: String;
+Run
+  Asm "auto start = s.find_first_not_of(' '); auto end = s.find_last_not_of(' '); result = (start == std::string::npos) ? \"\" : s.substr(start, end - start + 1);";
+  Trim <- result;
+Stop;
+
+Func Abs(value: Integer): Integer;
+Var
+  result: Integer;
+Run
+  Asm "result = std::abs(value);";
+  Abs <- result;
+Stop;
+
+Func AbsReal(value: Real): Real;
+Var
+  result: Real;
+Run
+  Asm "result = std::abs(value);";
+  AbsReal <- result;
+Stop;
+
+Func Pow(base: Integer; exp: Integer): Integer;
+Var
+  result: Integer;
+Run
+  Asm "result = (int)std::pow(base, exp);";
+  Pow <- result;
+Stop;
+
+Func PowReal(base: Real; exp: Real): Real;
+Var
+  result: Real;
+Run
+  Asm "result = std::pow(base, exp);";
+  PowReal <- result;
+Stop;
+
+Func Sqrt(value: Real): Real;
+Var
+  result: Real;
+Run
+  Asm "result = std::sqrt(value);";
+  Sqrt <- result;
+Stop;
+
+Func Min(a: Integer; b: Integer): Integer;
+Var
+  result: Integer;
+Run
+  If a < b Then result <- a Else result <- b;
+  Min <- result;
+Stop;
+
+Func Max(a: Integer; b: Integer): Integer;
+Var
+  result: Integer;
+Run
+  If a > b Then result <- a Else result <- b;
+  Max <- result;
+Stop;
+
+Const
+  Pi = 3.14159265358979323846;
+
+Func DegToRad(deg: Real): Real;
+Run
+  DegToRad <- deg * Pi / 180.0;
+Stop;
+
+Func RadToDeg(rad: Real): Real;
+Run
+  RadToDeg <- rad * 180.0 / Pi;
+Stop;
