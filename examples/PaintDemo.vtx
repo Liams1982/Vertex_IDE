@@ -1,0 +1,81 @@
+Import "vcl.vtx";
+
+Var
+  drawing: Integer;
+  lastX: Integer;
+  lastY: Integer;
+  ink: Integer;
+  hClear: HWND;
+
+Proc OnDown(h: HWND; x: Integer; y: Integer; button: Integer);
+Run
+  If button = 1 Then
+  Run
+    drawing <- 1;
+    lastX <- x;
+    lastY <- y;
+    CanvasBegin(MainWindow);
+    SetPenColor(ink);
+    SetPenWidth(3);
+    CanvasMoveTo(x, y);
+  Stop;
+Stop;
+
+Proc OnMove(h: HWND; x: Integer; y: Integer; button: Integer);
+Run
+  If drawing = 1 Then
+  Run
+    CanvasLineTo(x, y);
+    lastX <- x;
+    lastY <- y;
+  Stop;
+Stop;
+
+Proc OnUp(h: HWND; x: Integer; y: Integer; button: Integer);
+Run
+  If drawing = 1 Then
+  Run
+    CanvasLineTo(x, y);
+    CanvasEnd();
+    drawing <- 0;
+  Stop;
+Stop;
+
+Proc OnBtn(hCtrl: HWND);
+Run
+  If hCtrl = hClear Then
+  Run
+    CanvasBegin(MainWindow);
+    CanvasClear(ColorRGB(255, 255, 255));
+    SetPenColor(ColorRGB(0, 0, 200));
+    SetPenWidth(2);
+    SetBrushColor(ColorRGB(180, 220, 255));
+    CanvasRectangle(40, 60, 160, 140);
+    SetBrushColor(ColorRGB(255, 200, 120));
+    CanvasEllipse(200, 60, 320, 160);
+    SetBrushColor(ColorRGB(120, 220, 120));
+    CanvasTriangle(120, 200, 60, 300, 180, 300);
+    SetPenColor(ColorRGB(200, 0, 0));
+    SetPenWidth(4);
+    CanvasCircle(280, 240, 40);
+    CanvasTextOut(40, 320, "Vertex Canvas");
+    CanvasEnd();
+  Stop;
+Stop;
+
+Enter PaintDemo;
+Run
+  drawing <- 0;
+  ink <- ColorRGB(20, 20, 20);
+  Window(480, 380, 120, 100);
+  SetWindowTitle("Vertex Paint Demo");
+  SetFormColor(ColorRGB(255, 255, 255));
+  hClear <- Button(MainWindow, 110, 28, 10, 10);
+  SetText(hClear, "Clear / Demo");
+  OnClick(@OnBtn);
+  OnMouseDown(@OnDown);
+  OnMouseMove(@OnMove);
+  OnMouseUp(@OnUp);
+  RunApp();
+Stop
+Exit.

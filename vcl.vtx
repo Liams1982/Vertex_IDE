@@ -1,6 +1,6 @@
 {----------------------------------------------------------------------------}
 { VCL - Vertex Component Library                                             }
-{ Color support: ColorRGB, SetFormColor, SetBackColor, SetCtrlTextColor     }
+{ Controls + colors + canvas graphics + extra events                         }
 {----------------------------------------------------------------------------}
 Import <windows.h>;
 Import <cstring>;
@@ -8,112 +8,124 @@ Import <cmath>;
 
 Type
   TNotifyEvent = Proc(hCtrl: HWND);
+  TMouseEvent  = Proc(hCtrl: HWND; x: Integer; y: Integer; button: Integer);
+  TKeyEvent    = Proc(hCtrl: HWND; key: Integer);
 
 Var
   MainWindow: HWND;
   VCL_Instance: HINSTANCE;
   NextControlID: Integer;
-  ClickHandler: TNotifyEvent;
   VCL_ClassRegistered: Integer;
-
-  { Form background }
+  ClickHandler: TNotifyEvent;
+  ChangeHandler: TNotifyEvent;
+  MouseDownHandler: TMouseEvent;
+  MouseUpHandler: TMouseEvent;
+  MouseMoveHandler: TMouseEvent;
+  KeyDownHandler: TKeyEvent;
   FormColor: Integer;
   FormBrush: Integer;
-
-  { Per-control colors (max 64) }
   CtrlColorCount: Integer;
   CtrlColorH: Array[0..63] Of HWND;
   CtrlColorBack: Array[0..63] Of Integer;
   CtrlColorText: Array[0..63] Of Integer;
   CtrlColorBrush: Array[0..63] Of Integer;
-
-{---------------------- String / Math Helpers ----------------------}
+  CanvasDC: HDC;
+  CanvasHWND: HWND;
+  PenColor: Integer;
+  PenWidth: Integer;
+  PenStyle: Integer;
+  BrushColor: Integer;
+  BrushStyle: Integer;
+  CanvasPen: Integer;
+  CanvasBrush: Integer;
+  CanvasX: Integer;
+  CanvasY: Integer;
 
 Func Length(s: String): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   Asm "result = (int)strlen(s.c_str());";
   Length <- result;
 Stop;
 
 Func Ord(c: Char): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   Asm "result = (int)(unsigned char)c;";
   Ord <- result;
 Stop;
 
 Func Chr(code: Integer): Char;
-Var
-  result: Char;
+Var result: Char;
 Run
   Asm "result = (char)code;";
   Chr <- result;
 Stop;
 
 Func Trunc(value: Real): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   Asm "result = (int)value;";
   Trunc <- result;
 Stop;
 
 Func Round(value: Real): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   Asm "result = (int)round(value);";
   Round <- result;
 Stop;
 
 Func FloatToStr(value: Real): String;
-Var
-  result: String;
+Var result: String;
 Run
   Asm "result = std::to_string(value);";
   FloatToStr <- result;
 Stop;
 
 Func StrToFloat(s: String): Real;
-Var
-  result: Real;
+Var result: Real;
 Run
   Asm "result = atof(s.c_str());";
   StrToFloat <- result;
 Stop;
 
-{---------------------- Color helpers ----------------------}
+Func IntToStr(value: Integer): String;
+Var result: String;
+Run
+  Asm "result = std::to_string(value);";
+  IntToStr <- result;
+Stop;
+
+Func StrToInt(s: String): Integer;
+Var result: Integer;
+Run
+  Asm "result = atoi(s.c_str());";
+  StrToInt <- result;
+Stop;
 
 Func ColorRGB(r: Integer; g: Integer; b: Integer): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   Asm "result = (int)RGB((r) & 255, (g) & 255, (b) & 255);";
   ColorRGB <- result;
 Stop;
 
 Func _FindCtrlIndex(h: HWND): Integer;
-Var
-  i: Integer;
-  result: Integer;
+Var i: Integer; result: Integer;
 Run
   result <- -1;
   i <- 0;
   While i < CtrlColorCount Do
   Run
-    If CtrlColorH[i] = h Then
-      result <- i;
+    If CtrlColorH[i] = h Then result <- i;
     i <- i + 1;
   Stop;
   _FindCtrlIndex <- result;
 Stop;
 
 Proc _EnsureCtrlSlot(h: HWND);
-Var
-  idx: Integer;
+Var idx: Integer;
 Run
   idx <- _FindCtrlIndex(h);
   If idx < 0 Then
@@ -130,7 +142,163 @@ Run
   Stop;
 Stop;
 
-{---------------------- Window Procedure ----------------------}
+Proc _RebuildPen();
+Var style: Integer;
+Run
+  If CanvasPen <> 0 Then
+    Asm "DeleteObject((HPEN)(UINT_PTR)CanvasPen);";
+  CanvasPen <- 0;
+  style <- PS_SOLID;
+  If PenStyle = 1 Then style <- PS_DASH;
+  If PenStyle = 2 Then style <- PS_DOT;
+  If PenStyle = 3 Then style <- PS_DASHDOT;
+  If PenStyle = 4 Then style <- PS_NULL;
+  Asm "CanvasPen = (int)(UINT_PTR)CreatePen(style, PenWidth, (COLORREF)PenColor);";
+  If CanvasDC <> 0 Then
+    Asm "SelectObject(CanvasDC, (HPEN)(UINT_PTR)CanvasPen);";
+Stop;
+
+Proc _RebuildBrush();
+Run
+  If CanvasBrush <> 0 Then
+    Asm "DeleteObject((HBRUSH)(UINT_PTR)CanvasBrush);";
+  CanvasBrush <- 0;
+  If BrushStyle = 1 Then
+    Asm "CanvasBrush = (int)(UINT_PTR)GetStockObject(HOLLOW_BRUSH);"
+  Else
+    Asm "CanvasBrush = (int)(UINT_PTR)CreateSolidBrush((COLORREF)BrushColor);";
+  If CanvasDC <> 0 Then
+    Asm "SelectObject(CanvasDC, (HBRUSH)(UINT_PTR)CanvasBrush);";
+Stop;
+
+Proc CanvasBegin(h: HWND);
+Run
+  If h = 0 Then h <- MainWindow;
+  CanvasHWND <- h;
+  CanvasDC <- 0;
+  If h <> 0 Then
+    Asm "CanvasDC = GetDC(h);";
+  If CanvasDC <> 0 Then
+  Run
+    _RebuildPen();
+    _RebuildBrush();
+    Asm "SelectObject(CanvasDC, (HPEN)(UINT_PTR)CanvasPen);";
+    Asm "SelectObject(CanvasDC, (HBRUSH)(UINT_PTR)CanvasBrush);";
+    Asm "SetBkMode(CanvasDC, TRANSPARENT);";
+  Stop;
+Stop;
+
+Proc CanvasEnd();
+Run
+  If (CanvasDC <> 0) And (CanvasHWND <> 0) Then
+    Asm "ReleaseDC(CanvasHWND, CanvasDC);";
+  CanvasDC <- 0;
+  CanvasHWND <- 0;
+Stop;
+
+Proc SetPenColor(color: Integer);
+Run
+  PenColor <- color;
+  If CanvasDC <> 0 Then _RebuildPen();
+Stop;
+
+Proc SetPenWidth(w: Integer);
+Run
+  If w < 1 Then w <- 1;
+  PenWidth <- w;
+  If CanvasDC <> 0 Then _RebuildPen();
+Stop;
+
+Proc SetPenStyle(style: Integer);
+Run
+  PenStyle <- style;
+  If CanvasDC <> 0 Then _RebuildPen();
+Stop;
+
+Proc SetBrushColor(color: Integer);
+Run
+  BrushColor <- color;
+  BrushStyle <- 0;
+  If CanvasDC <> 0 Then _RebuildBrush();
+Stop;
+
+Proc SetBrushStyle(style: Integer);
+Run
+  BrushStyle <- style;
+  If CanvasDC <> 0 Then _RebuildBrush();
+Stop;
+
+Proc CanvasMoveTo(x: Integer; y: Integer);
+Run
+  CanvasX <- x;
+  CanvasY <- y;
+  If CanvasDC <> 0 Then
+    Asm "MoveToEx(CanvasDC, x, y, NULL);";
+Stop;
+
+Proc CanvasLineTo(x: Integer; y: Integer);
+Run
+  If CanvasDC <> 0 Then
+    Asm "LineTo(CanvasDC, x, y);";
+  CanvasX <- x;
+  CanvasY <- y;
+Stop;
+
+Proc CanvasLine(x1: Integer; y1: Integer; x2: Integer; y2: Integer);
+Run
+  CanvasMoveTo(x1, y1);
+  CanvasLineTo(x2, y2);
+Stop;
+
+Proc CanvasRectangle(x1: Integer; y1: Integer; x2: Integer; y2: Integer);
+Run
+  If CanvasDC <> 0 Then
+    Asm "Rectangle(CanvasDC, x1, y1, x2, y2);";
+Stop;
+
+Proc CanvasEllipse(x1: Integer; y1: Integer; x2: Integer; y2: Integer);
+Run
+  If CanvasDC <> 0 Then
+    Asm "Ellipse(CanvasDC, x1, y1, x2, y2);";
+Stop;
+
+Proc CanvasCircle(cx: Integer; cy: Integer; radius: Integer);
+Run
+  CanvasEllipse(cx - radius, cy - radius, cx + radius, cy + radius);
+Stop;
+
+Proc CanvasTriangle(x1: Integer; y1: Integer; x2: Integer; y2: Integer; x3: Integer; y3: Integer);
+Run
+  If CanvasDC <> 0 Then
+    Asm "{ POINT pts[3]; pts[0].x=x1; pts[0].y=y1; pts[1].x=x2; pts[1].y=y2; pts[2].x=x3; pts[2].y=y3; Polygon(CanvasDC, pts, 3); }";
+Stop;
+
+Proc CanvasFillRect(x1: Integer; y1: Integer; x2: Integer; y2: Integer);
+Run
+  If CanvasDC <> 0 Then
+    Asm "{ RECT r; r.left=x1; r.top=y1; r.right=x2; r.bottom=y2; FillRect(CanvasDC, &r, (HBRUSH)(UINT_PTR)CanvasBrush); }";
+Stop;
+
+Proc CanvasTextOut(x: Integer; y: Integer; text: String);
+Run
+  If CanvasDC <> 0 Then
+  Run
+    Asm "SetTextColor(CanvasDC, (COLORREF)PenColor);";
+    Asm "TextOutA(CanvasDC, x, y, text.c_str(), (int)text.size());";
+  Stop;
+Stop;
+
+Proc CanvasClear(color: Integer);
+Var old: Integer;
+Run
+  If (CanvasDC <> 0) And (CanvasHWND <> 0) Then
+  Run
+    old <- BrushColor;
+    SetBrushColor(color);
+    Asm "{ RECT rc; GetClientRect(CanvasHWND, &rc); FillRect(CanvasDC, &rc, (HBRUSH)(UINT_PTR)CanvasBrush); }";
+    SetBrushColor(old);
+  Stop;
+Stop;
 
 Func WndProc(hWnd: HWND; uMsg: UINT; wParam: WPARAM; lParam: LPARAM): LRESULT;
 Var
@@ -143,29 +311,29 @@ Var
   brush: Integer;
   back: Integer;
   textc: Integer;
+  mx: Integer;
+  my: Integer;
+  btn: Integer;
+  key: Integer;
 Run
   handled <- 0;
   result <- 0;
-
   If uMsg = WM_DESTROY Then
   Run
     PostQuitMessage(0);
     result <- 0;
     handled <- 1;
   Stop;
-
   If (uMsg = WM_ERASEBKGND) And (handled = 0) And (FormBrush <> 0) Then
   Run
     Asm "{ RECT rc; GetClientRect(hWnd, &rc); FillRect((HDC)wParam, &rc, (HBRUSH)(UINT_PTR)FormBrush); }";
     result <- 1;
     handled <- 1;
   Stop;
-
   If (uMsg = WM_CTLCOLORSTATIC) Or (uMsg = WM_CTLCOLOREDIT) Or (uMsg = WM_CTLCOLORBTN) Or (uMsg = WM_CTLCOLORLISTBOX) Then
   Run
     If handled = 0 Then
     Run
-      { wParam is HDC, lParam is HWND - cast required on 64-bit }
       Asm "hdc = (HDC)wParam;";
       Asm "ctrl = (HWND)lParam;";
       idx <- _FindCtrlIndex(ctrl);
@@ -187,7 +355,6 @@ Run
         Stop
         Else
         Run
-          { text color only - keep system background }
           If textc >= 0 Then
           Run
             Asm "SetBkMode(hdc, TRANSPARENT);";
@@ -198,13 +365,10 @@ Run
       Stop;
     Stop;
   Stop;
-
-  { Owner-draw buttons (SetBackColor forces BS_OWNERDRAW) }
   If (uMsg = WM_DRAWITEM) And (handled = 0) Then
   Run
     Asm "{ DRAWITEMSTRUCT* dis = (DRAWITEMSTRUCT*)lParam; if (dis && dis->CtlType == ODT_BUTTON) { HWND btn = dis->hwndItem; int back = -1, textc = -1; for (int i = 0; i < CtrlColorCount; i++) { if (CtrlColorH[i] == btn) { back = CtrlColorBack[i]; textc = CtrlColorText[i]; break; } } HDC hdc = dis->hDC; RECT rc = dis->rcItem; int selected = (dis->itemState & ODS_SELECTED) != 0; int focused = (dis->itemState & ODS_FOCUS) != 0; int disabled = (dis->itemState & ODS_DISABLED) != 0; COLORREF bg = (back >= 0) ? (COLORREF)back : GetSysColor(COLOR_BTNFACE); COLORREF fg = (textc >= 0) ? (COLORREF)textc : GetSysColor(COLOR_BTNTEXT); if (disabled) fg = GetSysColor(COLOR_GRAYTEXT); HBRUSH br = CreateSolidBrush(bg); FillRect(hdc, &rc, br); DeleteObject(br); if (selected) DrawEdge(hdc, &rc, EDGE_SUNKEN, BF_RECT); else DrawEdge(hdc, &rc, EDGE_RAISED, BF_RECT); char text[256]; GetWindowTextA(btn, text, 256); SetBkMode(hdc, TRANSPARENT); SetTextColor(hdc, fg); RECT tr = rc; if (selected) { tr.left++; tr.top++; } DrawTextA(hdc, text, -1, &tr, DT_CENTER | DT_VCENTER | DT_SINGLELINE); if (focused) { RECT fr = rc; InflateRect(&fr, -3, -3); DrawFocusRect(hdc, &fr); } result = TRUE; handled = 1; } }";
   Stop;
-
   If (uMsg = WM_COMMAND) And (handled = 0) Then
   Run
     If HIWORD(wParam) = BN_CLICKED Then
@@ -215,16 +379,64 @@ Run
         ClickHandler(ctrl);
       result <- 0;
       handled <- 1;
+    Stop
+    Else If HIWORD(wParam) = EN_CHANGE Then
+    Run
+      id <- LOWORD(wParam);
+      ctrl <- GetDlgItem(hWnd, id);
+      If (ChangeHandler <> 0) And (ctrl <> 0) Then
+        ChangeHandler(ctrl);
+      result <- 0;
+      handled <- 1;
     Stop;
   Stop;
-
+  If (uMsg = WM_LBUTTONDOWN) Or (uMsg = WM_RBUTTONDOWN) Or (uMsg = WM_MBUTTONDOWN) Then
+  Run
+    If handled = 0 Then
+    Run
+      Asm "mx = (int)(short)LOWORD(lParam); my = (int)(short)HIWORD(lParam);";
+      btn <- 1;
+      If uMsg = WM_RBUTTONDOWN Then btn <- 2;
+      If uMsg = WM_MBUTTONDOWN Then btn <- 3;
+      If MouseDownHandler <> 0 Then
+        MouseDownHandler(hWnd, mx, my, btn);
+      handled <- 1;
+      result <- 0;
+    Stop;
+  Stop;
+  If (uMsg = WM_LBUTTONUP) Or (uMsg = WM_RBUTTONUP) Or (uMsg = WM_MBUTTONUP) Then
+  Run
+    If handled = 0 Then
+    Run
+      Asm "mx = (int)(short)LOWORD(lParam); my = (int)(short)HIWORD(lParam);";
+      btn <- 1;
+      If uMsg = WM_RBUTTONUP Then btn <- 2;
+      If uMsg = WM_MBUTTONUP Then btn <- 3;
+      If MouseUpHandler <> 0 Then
+        MouseUpHandler(hWnd, mx, my, btn);
+      handled <- 1;
+      result <- 0;
+    Stop;
+  Stop;
+  If (uMsg = WM_MOUSEMOVE) And (handled = 0) Then
+  Run
+    Asm "mx = (int)(short)LOWORD(lParam); my = (int)(short)HIWORD(lParam);";
+    btn <- 0;
+    If MouseMoveHandler <> 0 Then
+      MouseMoveHandler(hWnd, mx, my, btn);
+    result <- 0;
+  Stop;
+  If (uMsg = WM_KEYDOWN) And (handled = 0) Then
+  Run
+    key <- wParam;
+    If KeyDownHandler <> 0 Then
+      KeyDownHandler(hWnd, key);
+    result <- 0;
+  Stop;
   If handled = 0 Then
     result <- DefWindowProcA(hWnd, uMsg, wParam, lParam);
-
   WndProc <- result;
 Stop;
-
-{---------------------- Window Management ----------------------}
 
 Proc EnsureVCLClass();
 Var
@@ -236,11 +448,8 @@ Run
   If VCL_ClassRegistered = 0 Then
   Run
     inst <- VCL_Instance;
-    If inst = 0 Then
-      inst <- GetModuleHandleA(NULL);
-
+    If inst = 0 Then inst <- GetModuleHandleA(NULL);
     clsName <- "VertexVCLClass";
-
     wc.cbSize <- SizeOf(WNDCLASSEXA);
     wc.style <- CS_HREDRAW Or CS_VREDRAW;
     wc.lpfnWndProc <- @WndProc;
@@ -253,7 +462,6 @@ Run
     wc.lpszMenuName <- NULL;
     Asm "wc.lpszClassName = clsName.c_str();";
     wc.hIconSm <- LoadIconA(NULL, IDI_APPLICATION);
-
     atom <- RegisterClassExA(@wc);
     VCL_ClassRegistered <- 1;
   Stop;
@@ -273,6 +481,17 @@ Run
   CtrlColorCount <- 0;
   FormColor <- -1;
   FormBrush <- 0;
+  PenColor <- ColorRGB(0, 0, 0);
+  PenWidth <- 1;
+  PenStyle <- 0;
+  BrushColor <- ColorRGB(255, 255, 255);
+  BrushStyle <- 0;
+  CanvasPen <- 0;
+  CanvasBrush <- 0;
+  CanvasDC <- 0;
+  CanvasHWND <- 0;
+  CanvasX <- 0;
+  CanvasY <- 0;
   If MainWindow <> 0 Then
   Run
     ShowWindow(MainWindow, SW_SHOW);
@@ -281,9 +500,7 @@ Run
 Stop;
 
 Proc RunApp();
-Var
-  msg: MSG;
-  ret: Integer;
+Var msg: MSG; ret: Integer;
 Run
   ret <- GetMessageA(@msg, NULL, 0, 0);
   While ret > 0 Do
@@ -294,212 +511,123 @@ Run
   Stop;
 Stop;
 
-{---------------------- Control Creation ----------------------}
-
 Func Button(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "BUTTON";
-  caption <- "Button";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "BUTTON"; caption <- "Button";
   Asm "h = CreateWindowA(cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Button <- h;
 Stop;
 
 Func Edit(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "EDIT";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "EDIT"; caption <- "";
   Asm "h = CreateWindowExA((DWORD)WS_EX_CLIENTEDGE, cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | ES_AUTOHSCROLL | ES_LEFT | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Edit <- h;
 Stop;
 
 Func Label(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "STATIC";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "STATIC"; caption <- "";
   Asm "h = CreateWindowA(cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | SS_LEFT), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Label <- h;
 Stop;
 
 Func Memo(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "EDIT";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "EDIT"; caption <- "";
   Asm "h = CreateWindowExA((DWORD)WS_EX_CLIENTEDGE, cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Memo <- h;
 Stop;
 
 Func CheckBox(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "BUTTON";
-  caption <- "CheckBox";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "BUTTON"; caption <- "CheckBox";
   Asm "h = CreateWindowA(cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | BS_AUTOCHECKBOX | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   CheckBox <- h;
 Stop;
 
 Func Radio(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "BUTTON";
-  caption <- "Radio";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "BUTTON"; caption <- "Radio";
   Asm "h = CreateWindowA(cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | BS_AUTORADIOBUTTON | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Radio <- h;
 Stop;
 
 Func ListBox(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "LISTBOX";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "LISTBOX"; caption <- "";
   Asm "h = CreateWindowExA((DWORD)WS_EX_CLIENTEDGE, cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | WS_VSCROLL | LBS_NOTIFY | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   ListBox <- h;
 Stop;
 
 Func ComboBox(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "COMBOBOX";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "COMBOBOX"; caption <- "";
   Asm "h = CreateWindowExA(0, cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | CBS_DROPDOWN | CBS_HASSTRINGS | WS_VSCROLL | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   ComboBox <- h;
 Stop;
 
 Func GroupBox(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "BUTTON";
-  caption <- "Group";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "BUTTON"; caption <- "Group";
   Asm "h = CreateWindowA(cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | BS_GROUPBOX), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   GroupBox <- h;
 Stop;
 
 Func Panel(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
-Var
-  h: HWND;
-  id: Integer;
-  inst: HINSTANCE;
-  cls: String;
-  caption: String;
+Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
   If parent = 0 Then parent <- MainWindow;
-  id <- NextControlID;
-  NextControlID <- NextControlID + 1;
-  inst <- VCL_Instance;
-  If inst = 0 Then inst <- GetModuleHandleA(NULL);
-  cls <- "STATIC";
-  caption <- "";
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  inst <- VCL_Instance; If inst = 0 Then inst <- GetModuleHandleA(NULL);
+  cls <- "STATIC"; caption <- "";
   Asm "h = CreateWindowExA((DWORD)WS_EX_CLIENTEDGE, cls.c_str(), caption.c_str(), (DWORD)(WS_CHILD | WS_VISIBLE | SS_LEFT), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, inst, NULL);";
   Panel <- h;
 Stop;
 
-
-{---------------------- Control Manipulation ----------------------}
-
 Proc SetText(hCtrl: HWND; text: String);
 Run
-  If hCtrl <> 0 Then
-    SetWindowTextA(hCtrl, text);
+  If hCtrl <> 0 Then SetWindowTextA(hCtrl, text);
 Stop;
 
 Func GetText(hCtrl: HWND): String;
-Var
-  result: String;
-  buffer: Array[0..511] Of Char;
-  n: Integer;
+Var result: String; buffer: Array[0..511] Of Char; n: Integer;
 Run
   result <- "";
   If hCtrl <> 0 Then
@@ -513,38 +641,32 @@ Stop;
 
 Proc SetWindowTitle(text: String);
 Run
-  If MainWindow <> 0 Then
-    SetWindowTextA(MainWindow, text);
+  If MainWindow <> 0 Then SetWindowTextA(MainWindow, text);
 Stop;
 
 Proc SetBounds(hCtrl: HWND; x: Integer; y: Integer; width: Integer; height: Integer);
 Run
-  If hCtrl <> 0 Then
-    MoveWindow(hCtrl, x, y, width, height, True);
+  If hCtrl <> 0 Then MoveWindow(hCtrl, x, y, width, height, True);
 Stop;
 
 Proc ShowCtrl(hCtrl: HWND);
 Run
-  If hCtrl <> 0 Then
-    ShowWindow(hCtrl, SW_SHOW);
+  If hCtrl <> 0 Then ShowWindow(hCtrl, SW_SHOW);
 Stop;
 
 Proc HideCtrl(hCtrl: HWND);
 Run
-  If hCtrl <> 0 Then
-    ShowWindow(hCtrl, SW_HIDE);
+  If hCtrl <> 0 Then ShowWindow(hCtrl, SW_HIDE);
 Stop;
 
 Proc EnableCtrl(hCtrl: HWND);
 Run
-  If hCtrl <> 0 Then
-    EnableWindow(hCtrl, True);
+  If hCtrl <> 0 Then EnableWindow(hCtrl, True);
 Stop;
 
 Proc DisableCtrl(hCtrl: HWND);
 Run
-  If hCtrl <> 0 Then
-    EnableWindow(hCtrl, False);
+  If hCtrl <> 0 Then EnableWindow(hCtrl, False);
 Stop;
 
 Proc ShowMessage(text: String; title: String);
@@ -555,6 +677,31 @@ Stop;
 Proc OnClick(handler: TNotifyEvent);
 Run
   ClickHandler <- handler;
+Stop;
+
+Proc OnChange(handler: TNotifyEvent);
+Run
+  ChangeHandler <- handler;
+Stop;
+
+Proc OnMouseDown(handler: TMouseEvent);
+Run
+  MouseDownHandler <- handler;
+Stop;
+
+Proc OnMouseUp(handler: TMouseEvent);
+Run
+  MouseUpHandler <- handler;
+Stop;
+
+Proc OnMouseMove(handler: TMouseEvent);
+Run
+  MouseMoveHandler <- handler;
+Stop;
+
+Proc OnKeyDown(handler: TKeyEvent);
+Run
+  KeyDownHandler <- handler;
 Stop;
 
 Proc SetChecked(hCtrl: HWND; checked: Integer);
@@ -569,8 +716,7 @@ Run
 Stop;
 
 Func GetChecked(hCtrl: HWND): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   result <- 0;
   If hCtrl <> 0 Then
@@ -591,8 +737,7 @@ Run
 Stop;
 
 Func GetItemCount(hCtrl: HWND): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   result <- 0;
   If hCtrl <> 0 Then
@@ -601,8 +746,7 @@ Run
 Stop;
 
 Func GetItemIndex(hCtrl: HWND): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   result <- -1;
   If hCtrl <> 0 Then
@@ -616,48 +760,22 @@ Run
     Asm "SendMessageA(hCtrl, LB_SETCURSEL, (WPARAM)index, 0); SendMessageA(hCtrl, CB_SETCURSEL, (WPARAM)index, 0);";
 Stop;
 
-Func IntToStr(value: Integer): String;
-Var
-  result: String;
-Run
-  Asm "result = std::to_string(value);";
-  IntToStr <- result;
-Stop;
-
-Func StrToInt(s: String): Integer;
-Var
-  result: Integer;
-Run
-  Asm "result = atoi(s.c_str());";
-  StrToInt <- result;
-Stop;
-
-
-{---------------------- ComPort (simple Win32 serial) ----------------------}
-{ h is Integer handle (0 = closed). Port: "COM1", "COM3", "\\\\.\\COM10"     }
-
 Func ComOpen(port: String; baud: Integer): Integer;
-Var
-  h: Integer;
-  ok: Integer;
+Var h: Integer; ok: Integer;
 Run
-  h <- 0;
-  ok <- 0;
+  h <- 0; ok <- 0;
   Asm "{ HANDLE hh = CreateFileA(port.c_str(), GENERIC_READ | GENERIC_WRITE, 0, NULL, OPEN_EXISTING, 0, NULL); if (hh != INVALID_HANDLE_VALUE) { DCB dcb; ZeroMemory(&dcb, sizeof(dcb)); dcb.DCBlength = sizeof(dcb); if (GetCommState(hh, &dcb)) { dcb.BaudRate = (DWORD)baud; dcb.ByteSize = 8; dcb.Parity = NOPARITY; dcb.StopBits = ONESTOPBIT; dcb.fBinary = TRUE; dcb.fParity = FALSE; SetCommState(hh, &dcb); COMMTIMEOUTS to; ZeroMemory(&to, sizeof(to)); to.ReadIntervalTimeout = 50; to.ReadTotalTimeoutConstant = 50; to.ReadTotalTimeoutMultiplier = 10; to.WriteTotalTimeoutConstant = 50; to.WriteTotalTimeoutMultiplier = 10; SetCommTimeouts(hh, &to); h = (int)(UINT_PTR)hh; ok = 1; } else { CloseHandle(hh); } } }";
-  If ok = 0 Then
-    h <- 0;
+  If ok = 0 Then h <- 0;
   ComOpen <- h;
 Stop;
 
 Proc ComClose(h: Integer);
 Run
-  If h <> 0 Then
-    Asm "CloseHandle((HANDLE)(UINT_PTR)h);";
+  If h <> 0 Then Asm "CloseHandle((HANDLE)(UINT_PTR)h);";
 Stop;
 
 Func ComWrite(h: Integer; data: String): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   result <- 0;
   If h <> 0 Then
@@ -666,8 +784,7 @@ Run
 Stop;
 
 Func ComRead(h: Integer; maxLen: Integer): String;
-Var
-  result: String;
+Var result: String;
 Run
   result <- "";
   If (h <> 0) And (maxLen > 0) Then
@@ -676,8 +793,7 @@ Run
 Stop;
 
 Func ComBytesAvailable(h: Integer): Integer;
-Var
-  result: Integer;
+Var result: Integer;
 Run
   result <- 0;
   If h <> 0 Then
@@ -685,59 +801,44 @@ Run
   ComBytesAvailable <- result;
 Stop;
 
-
-{---------------------- Color APIs ----------------------}
-
 Proc SetFormColor(color: Integer);
 Run
   FormColor <- color;
-  If FormBrush <> 0 Then
-    Asm "DeleteObject((HBRUSH)(UINT_PTR)FormBrush);";
+  If FormBrush <> 0 Then Asm "DeleteObject((HBRUSH)(UINT_PTR)FormBrush);";
   FormBrush <- 0;
-  If color >= 0 Then
-    Asm "FormBrush = (int)(UINT_PTR)CreateSolidBrush((COLORREF)color);";
-  If MainWindow <> 0 Then
-    InvalidateRect(MainWindow, NULL, True);
+  If color >= 0 Then Asm "FormBrush = (int)(UINT_PTR)CreateSolidBrush((COLORREF)color);";
+  If MainWindow <> 0 Then InvalidateRect(MainWindow, NULL, True);
 Stop;
 
 Proc _DisableCtrlTheme(hCtrl: HWND);
 Run
-  { Disable XP+ visual styles so WM_CTLCOLOR* is honored (no quotes in Asm) }
   Asm "{ char dll[]={117,120,116,104,101,109,101,46,100,108,108,0}; char fn[]={83,101,116,87,105,110,100,111,119,84,104,101,109,101,0}; HMODULE m=LoadLibraryA(dll); if(m){ typedef HRESULT (WINAPI *PFN)(HWND,const wchar_t*,const wchar_t*); PFN f=(PFN)GetProcAddress(m,fn); static wchar_t e[1]={0}; if(f) f(hCtrl,e,e);} }";
 Stop;
 
 Proc SetBackColor(hCtrl: HWND; color: Integer);
-Var
-  idx: Integer;
-  oldb: Integer;
+Var idx: Integer; oldb: Integer;
 Run
   If hCtrl <> 0 Then
   Run
     _DisableCtrlTheme(hCtrl);
-    { Buttons: switch to owner-draw so background color is painted in WM_DRAWITEM }
     Asm "{ LONG_PTR st = GetWindowLongPtrA(hCtrl, GWL_STYLE); LONG_PTR ty = st & 0x0F; if (ty == BS_PUSHBUTTON || ty == BS_DEFPUSHBUTTON || ty == BS_FLAT || ty == 0) { st = (st & ~0x0F) | BS_OWNERDRAW; SetWindowLongPtrA(hCtrl, GWL_STYLE, st); } }";
     _EnsureCtrlSlot(hCtrl);
     idx <- _FindCtrlIndex(hCtrl);
     If idx >= 0 Then
     Run
       oldb <- CtrlColorBrush[idx];
-      If oldb <> 0 Then
-        Asm "DeleteObject((HBRUSH)(UINT_PTR)oldb);";
+      If oldb <> 0 Then Asm "DeleteObject((HBRUSH)(UINT_PTR)oldb);";
       CtrlColorBack[idx] <- color;
       CtrlColorBrush[idx] <- 0;
       If color >= 0 Then
         Asm "CtrlColorBrush[idx] = (int)(UINT_PTR)CreateSolidBrush((COLORREF)color);";
-      { Force full repaint so WM_CTLCOLOR* runs }
-      Asm "InvalidateRect(hCtrl, NULL, TRUE);";
-      Asm "UpdateWindow(hCtrl);";
-      Asm "RedrawWindow(hCtrl, NULL, NULL, RDW_INVALIDATE | RDW_ERASE | RDW_FRAME | RDW_UPDATENOW);";
+      Asm "InvalidateRect(hCtrl, NULL, TRUE); UpdateWindow(hCtrl);";
     Stop;
   Stop;
 Stop;
 
 Proc SetCtrlTextColor(hCtrl: HWND; color: Integer);
-Var
-  idx: Integer;
+Var idx: Integer;
 Run
   If hCtrl <> 0 Then
   Run
@@ -747,8 +848,7 @@ Run
     If idx >= 0 Then
     Run
       CtrlColorText[idx] <- color;
-      Asm "InvalidateRect(hCtrl, NULL, TRUE);";
-      Asm "UpdateWindow(hCtrl);";
+      Asm "InvalidateRect(hCtrl, NULL, TRUE); UpdateWindow(hCtrl);";
     Stop;
   Stop;
 Stop;

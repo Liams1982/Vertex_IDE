@@ -22,7 +22,7 @@ DEFAULT_CONFIG = {
     "gui_app": False,
     "theme": "dark",
     "auto_detect_gui": True,
-    "sidebar_width": 250,
+    "sidebar_width": 280,
 }
 
 def load_config():
@@ -107,6 +107,27 @@ TYPES = {
     "HWND", "MSG", "WNDCLASSEX", "LRESULT", "UINT", "WPARAM", "LPARAM",
     "HINSTANCE", "HINST", "HMENU", "HDC", "RECT",
 }
+
+# Completions for editor (methods / procs / common APIs)
+COMPLETIONS = sorted(set(list(KEYWORDS) + list(TYPES) + [
+    "Window", "RunApp", "SetWindowTitle", "ShowMessage",
+    "Button", "Edit", "Label", "Memo", "CheckBox", "Radio",
+    "ListBox", "ComboBox", "GroupBox", "Panel",
+    "SetText", "GetText", "SetBounds", "ShowCtrl", "HideCtrl",
+    "EnableCtrl", "DisableCtrl", "OnClick", "OnChange",
+    "OnMouseDown", "OnMouseUp", "OnMouseMove", "OnKeyDown",
+    "SetChecked", "GetChecked", "AddItem", "ClearItems",
+    "GetItemCount", "GetItemIndex", "SetItemIndex",
+    "ColorRGB", "SetFormColor", "SetBackColor", "SetCtrlTextColor",
+    "CanvasBegin", "CanvasEnd", "CanvasMoveTo", "CanvasLineTo",
+    "CanvasLine", "CanvasRectangle", "CanvasEllipse", "CanvasCircle",
+    "CanvasTriangle", "CanvasFillRect", "CanvasTextOut", "CanvasClear",
+    "SetPenColor", "SetPenWidth", "SetPenStyle",
+    "SetBrushColor", "SetBrushStyle",
+    "ComOpen", "ComClose", "ComWrite", "ComRead", "ComBytesAvailable",
+    "MainWindow", "IntToStr", "StrToInt", "FloatToStr", "StrToFloat",
+    "Length", "True", "False", "Integer", "Real", "Boolean", "String",
+]))
 
 # Palette: (type_id, label, default_w, default_h, default_caption, icon)
 PALETTE = [
@@ -831,20 +852,20 @@ class VertexIDE:
                 bg=theme["btn_bg"], fg=theme["btn_fg"],
                 activebackground=theme["btn_active"],
                 relief=tk.FLAT,
-                font=("Segoe UI", 9, "bold"),
-                padx=4, pady=4,
-                width=8, height=3,
+                font=("Segoe UI", 12, "bold"),
+                padx=6, pady=8,
+                width=9, height=4,
                 justify=tk.CENTER,
                 command=lambda t=ctype: self._select_tool(t)
             )
-            b.grid(row=row, column=col, padx=1, pady=1, sticky="nsew")
+            b.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
             self.palette_btns[ctype] = b
             col += 1
-            if col >= 4:
+            if col >= 3:
                 col = 0
                 row += 1
 
-        for c in range(4):
+        for c in range(3):
             grid_frame.columnconfigure(c, weight=1)
 
         # Separator
@@ -2523,6 +2544,11 @@ class VertexIDE:
         if self._highlight_job:
             self.root.after_cancel(self._highlight_job)
         self._highlight_job = self.root.after(80, lambda: highlight(self.editor))
+        # live suggestions
+        try:
+            self._editor_keyrelease_ac(event)
+        except Exception:
+            pass
 
     def _on_cursor_move(self, event=None):
         self.update_cursor_position()
@@ -2939,6 +2965,91 @@ class VertexIDE:
         if path:
             entry.delete(0, tk.END)
             entry.insert(0, path)
+
+
+    # ---------- Autocomplete ----------
+    def _editor_keyrelease_ac(self, event=None):
+        if event and event.keysym in ("Return", "Tab", "Escape", "Up", "Down", "Left", "Right"):
+            if event.keysym == "Escape":
+                self._hide_completion()
+            return
+        self.root.after(40, self._show_completion)
+
+    def _current_word(self):
+        try:
+            idx = self.editor.index("insert")
+            line_start = self.editor.index(f"{idx} linestart")
+            prefix = self.editor.get(line_start, idx)
+            i = len(prefix) - 1
+            while i >= 0 and (prefix[i].isalnum() or prefix[i] == "_"):
+                i -= 1
+            return prefix[i + 1 :]
+        except Exception:
+            return ""
+
+    def _show_completion(self):
+        word = self._current_word()
+        if len(word) < 2:
+            self._hide_completion()
+            return
+        low = word.lower()
+        matches = [c for c in COMPLETIONS if c.lower().startswith(low) and c.lower() != low]
+        if not matches:
+            self._hide_completion()
+            return
+        matches = matches[:12]
+        if not hasattr(self, "_ac_win") or self._ac_win is None:
+            self._ac_win = tk.Toplevel(self.root)
+            self._ac_win.wm_overrideredirect(True)
+            self._ac_list = tk.Listbox(self._ac_win, height=8, font=("Consolas", 10),
+                                      activestyle="dotbox", exportselection=False)
+            self._ac_list.pack()
+            self._ac_list.bind("<Double-Button-1>", self._accept_completion)
+            self._ac_list.bind("<Return>", self._accept_completion)
+            self._ac_list.bind("<Escape>", lambda e: self._hide_completion())
+        self._ac_list.delete(0, tk.END)
+        for m in matches:
+            self._ac_list.insert(tk.END, m)
+        self._ac_list.selection_set(0)
+        try:
+            bbox = self.editor.bbox("insert")
+            if not bbox:
+                self._hide_completion()
+                return
+            x, y, w, h = bbox
+            abs_x = self.editor.winfo_rootx() + x
+            abs_y = self.editor.winfo_rooty() + y + h
+            self._ac_win.geometry(f"+{abs_x}+{abs_y}")
+            self._ac_win.deiconify()
+            self._ac_win.lift()
+        except Exception:
+            self._hide_completion()
+
+    def _hide_completion(self, event=None):
+        if hasattr(self, "_ac_win") and self._ac_win is not None:
+            try:
+                self._ac_win.withdraw()
+            except Exception:
+                pass
+
+    def _accept_completion(self, event=None):
+        if not hasattr(self, "_ac_list"):
+            return
+        sel = self._ac_list.curselection()
+        if not sel:
+            self._hide_completion()
+            return
+        choice = self._ac_list.get(sel[0])
+        word = self._current_word()
+        if word:
+            # delete current word and insert completion
+            idx = self.editor.index("insert")
+            start = self.editor.index(f"{idx} - {len(word)}c")
+            self.editor.delete(start, idx)
+            self.editor.insert(start, choice)
+        self._hide_completion()
+        self.root.after(10, lambda: highlight(self.editor))
+
 
     def status(self, msg):
         if hasattr(self, "status_label"):

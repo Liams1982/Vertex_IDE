@@ -1,9 +1,11 @@
 /* ============================================================
-   vertexc.c - Vertex Compiler with textual .vtx import
-   Compile: gcc -O2 -std=c99 vertexc.c -o vertexc
+   vertexc.c - Vertex Compiler with file/line tracking
    ============================================================ */
 
 #define _POSIX_C_SOURCE 200809L
+
+/* ================== Includes ================== */
+
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -11,7 +13,8 @@
 #include <stdarg.h>
 #include <stdint.h>
 
-/* ---------- Token Types ---------- */
+/* ================== Token Types ================== */
+
 typedef enum {
     TOK_EOF = 0,
     TOK_ENTER, TOK_EXIT, TOK_RUN, TOK_STOP,
@@ -51,7 +54,8 @@ typedef enum {
     TOK_IDENT, TOK_NUMBER, TOK_REAL, TOK_STRING, TOK_CHAR
 } TokenType;
 
-/* ---------- AST Node Types ---------- */
+/* ================== AST Node Types ================== */
+
 typedef enum {
     NODE_PROGRAM,
     NODE_IMPORT,
@@ -103,28 +107,36 @@ typedef enum {
     NODE_IDENT
 } NodeType;
 
-/* ---------- Lexer ---------- */
+/* ================== Lexer/Token Structures ================== */
+
 typedef struct {
     const char *src;
     int pos;
-    int line;
+    int line;           /* combined source line number */
+    int orig_line;      /* original source line number (tracked via #line) */
+    char *filename;     /* owned copy of current source file name */
+    int filename_owned; /* 1 if filename must be freed */
 } Lexer;
 
 typedef struct {
     TokenType type;
     char *value;
-    int line;
+    int line;           /* original source line number */
+    char *filename;     /* original source file name */
 } Token;
 
 typedef struct {
-    Lexer lex;
+    Lexer *lex;
     Token *current;
 } Parser;
+
+/* ================== AST Node ================== */
 
 typedef struct ASTNode {
     NodeType type;
     struct ASTNode *next;
     int line;
+    char *filename;
     union {
         struct { char *path; } import;
         struct { char *name; struct ASTNode *type_expr; struct ASTNode *value; } decl;
@@ -165,11 +177,17 @@ typedef struct ASTNode {
     } data;
 } ASTNode;
 
-/* ---------- Helpers ---------- */
-static ASTNode *new_node(NodeType type, int line) {
+/* ================== Global State ================== */
+
+static int error_count = 0;
+
+/* ================== Helpers ================== */
+
+static ASTNode *new_node(NodeType type, int line, const char *filename) {
     ASTNode *n = calloc(1, sizeof(ASTNode));
     n->type = type;
     n->line = line;
+    n->filename = filename ? strdup(filename) : NULL;
     return n;
 }
 
@@ -182,17 +200,42 @@ static char *my_strndup(const char *s, size_t n) {
     return d;
 }
 
-/* ---------- Lexer ---------- */
+
+/* Escape \ and " for use inside #line "..." directives */
+static char *escape_for_line_directive(const char *path) {
+    if (!path) path = "";
+    size_t n = 0;
+    for (const char *s = path; *s; s++)
+        n += (*s == '\\' || *s == '"') ? 2 : 1;
+    char *out = malloc(n + 1);
+    if (!out) return NULL;
+    char *d = out;
+    for (const char *s = path; *s; s++) {
+        if (*s == '\\' || *s == '"') *d++ = '\\';
+        *d++ = *s;
+    }
+    *d = '\0';
+    return out;
+}
+
+/* ================== Lexer ================== */
+
 static void skip_whitespace_and_comments(Lexer *lex) {
     while (lex->src[lex->pos]) {
         char c = lex->src[lex->pos];
         if (isspace((unsigned char)c)) {
-            if (c == '\n') lex->line++;
+            if (c == '\n') {
+                lex->line++;
+                lex->orig_line++;
+            }
             lex->pos++;
         } else if (c == '{') {
             lex->pos++;
             while (lex->src[lex->pos] && lex->src[lex->pos] != '}') {
-                if (lex->src[lex->pos] == '\n') lex->line++;
+                if (lex->src[lex->pos] == '\n') {
+                    lex->line++;
+                    lex->orig_line++;
+                }
                 lex->pos++;
             }
             if (lex->src[lex->pos] == '}') lex->pos++;
@@ -223,9 +266,8 @@ static char *read_number(Lexer *lex) {
     return my_strndup(lex->src + start, (size_t)(lex->pos - start));
 }
 
-/* UPDATED: read string with escape sequences */
 static char *read_string_with_escapes(Lexer *lex) {
-    lex->pos++; /* skip opening " */
+    lex->pos++;
     char *result = NULL;
     size_t len = 0;
     while (lex->src[lex->pos] && lex->src[lex->pos] != '"') {
@@ -274,20 +316,76 @@ static char *read_string_with_escapes(Lexer *lex) {
     return result;
 }
 
-static Token *make_token(TokenType type, char *value, int line) {
+static Token *make_token(TokenType type, char *value, int line, const char *filename) {
     Token *t = malloc(sizeof(Token));
     t->type = type;
     t->value = value;
     t->line = line;
+    t->filename = filename ? strdup(filename) : NULL;
     return t;
 }
 
+/* Handle #line directive: update lexer's file and line */
+static void handle_line_directive(Lexer *lex) {
+    /* format: #line <number> "filename" */
+    lex->pos++; /* skip '#' */
+    while (isspace((unsigned char)lex->src[lex->pos])) lex->pos++;
+    if (strncmp(lex->src + lex->pos, "line", 4) != 0) {
+        /* Not a line directive — leave '#' for the unexpected-char path */
+        lex->pos--;
+        return;
+    }
+    lex->pos += 4;
+    while (isspace((unsigned char)lex->src[lex->pos])) lex->pos++;
+    int num = 0;
+    while (isdigit((unsigned char)lex->src[lex->pos])) {
+        num = num * 10 + (lex->src[lex->pos] - '0');
+        lex->pos++;
+    }
+    while (isspace((unsigned char)lex->src[lex->pos])) lex->pos++;
+    if (lex->src[lex->pos] == '"') {
+        lex->pos++;
+        int start = lex->pos;
+        while (lex->src[lex->pos] && lex->src[lex->pos] != '"') lex->pos++;
+        int len = lex->pos - start;
+        /* Unescape \ and \" inside the directive string */
+        {
+            char *raw = my_strndup(lex->src + start, len);
+            size_t cap = (size_t)len + 1;
+            char *fname = malloc(cap);
+            size_t di = 0;
+            for (size_t si = 0; raw && raw[si]; si++) {
+                if (raw[si] == '\\' && raw[si + 1]) {
+                    si++;
+                    fname[di++] = raw[si];
+                } else {
+                    fname[di++] = raw[si];
+                }
+            }
+            if (fname) fname[di] = '\0';
+            free(raw);
+            if (lex->src[lex->pos] == '"') lex->pos++;
+        if (lex->filename_owned && lex->filename)
+            free(lex->filename);
+        lex->filename = fname;
+        lex->filename_owned = 1;
+        /* #line N → next source line is N (do not pre-decrement) */
+        lex->orig_line = num;
+    }
+    while (lex->src[lex->pos] && lex->src[lex->pos] != '\n') lex->pos++;
+    if (lex->src[lex->pos] == '\n') {
+        lex->pos++;
+        lex->line++;
+        /* do NOT do lex->orig_line++ here */
+    }
+}
+}
+
 static Token *get_token(Lexer *lex) {
+    /* handle BOM */
     if (lex->pos == 0) {
         const unsigned char *s = (const unsigned char *)lex->src;
-        if (s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF) {
-            lex->pos += 3;
-        }
+        if (s[0] == 0xEF && s[1] == 0xBB && s[2] == 0xBF) lex->pos += 3;
         else if (s[0] == 0xFF && s[1] == 0xFE) {
             fprintf(stderr, "Error: Source file is UTF-16 LE.\n");
             exit(1);
@@ -304,43 +402,52 @@ static Token *get_token(Lexer *lex) {
     }
 
     skip_whitespace_and_comments(lex);
-    if (!lex->src[lex->pos]) return make_token(TOK_EOF, NULL, lex->line);
+    if (!lex->src[lex->pos]) return make_token(TOK_EOF, NULL, lex->orig_line, lex->filename);
 
     char c = lex->src[lex->pos];
-    int line = lex->line;
+    int orig_line = lex->orig_line;
+    const char *filename = lex->filename;
+
+    /* Check for line directive */
+    if (c == '#' && strncmp(lex->src + lex->pos, "#line", 5) == 0) {
+        handle_line_directive(lex);
+        return get_token(lex);
+    }
 
     switch (c) {
-        case '+': lex->pos++; return make_token(TOK_PLUS, NULL, line);
-        case '-': lex->pos++; return make_token(TOK_MINUS, NULL, line);
-        case '*': lex->pos++; return make_token(TOK_STAR, NULL, line);
-        case '/': lex->pos++; return make_token(TOK_SLASH, NULL, line);
-        case '(': lex->pos++; return make_token(TOK_LPAREN, NULL, line);
-        case ')': lex->pos++; return make_token(TOK_RPAREN, NULL, line);
-        case '[': lex->pos++; return make_token(TOK_LBRACKET, NULL, line);
-        case ']': lex->pos++; return make_token(TOK_RBRACKET, NULL, line);
-        case ':': lex->pos++; return make_token(TOK_COLON, NULL, line);
-        case ';': lex->pos++; return make_token(TOK_SEMICOLON, NULL, line);
-        case ',': lex->pos++; return make_token(TOK_COMMA, NULL, line);
-        case '=': lex->pos++; return make_token(TOK_EQUALS, NULL, line);
-        case '@': lex->pos++; return make_token(TOK_AT, NULL, line);
-        case '^': lex->pos++; return make_token(TOK_CARET, NULL, line);
-        case '"': return make_token(TOK_STRING, read_string_with_escapes(lex), line);
-
+        case '+': lex->pos++; return make_token(TOK_PLUS, NULL, orig_line, filename);
+        case '-': lex->pos++; return make_token(TOK_MINUS, NULL, orig_line, filename);
+        case '*': lex->pos++; return make_token(TOK_STAR, NULL, orig_line, filename);
+        case '/': lex->pos++; return make_token(TOK_SLASH, NULL, orig_line, filename);
+        case '(': lex->pos++; return make_token(TOK_LPAREN, NULL, orig_line, filename);
+        case ')': lex->pos++; return make_token(TOK_RPAREN, NULL, orig_line, filename);
+        case '[': lex->pos++; return make_token(TOK_LBRACKET, NULL, orig_line, filename);
+        case ']': lex->pos++; return make_token(TOK_RBRACKET, NULL, orig_line, filename);
+        case ':': lex->pos++; return make_token(TOK_COLON, NULL, orig_line, filename);
+        case ';': lex->pos++; return make_token(TOK_SEMICOLON, NULL, orig_line, filename);
+        case ',': lex->pos++; return make_token(TOK_COMMA, NULL, orig_line, filename);
+        case '=': lex->pos++; return make_token(TOK_EQUALS, NULL, orig_line, filename);
+        case '@': lex->pos++; return make_token(TOK_AT, NULL, orig_line, filename);
+        case '^': lex->pos++; return make_token(TOK_CARET, NULL, orig_line, filename);
+        case '"': {
+            char *s = read_string_with_escapes(lex);
+            return make_token(TOK_STRING, s, orig_line, filename);
+        }
         case '<':
-            if (lex->src[lex->pos+1] == '-') { lex->pos += 2; return make_token(TOK_ASSIGN, NULL, line); }
-            else if (lex->src[lex->pos+1] == '>') { lex->pos += 2; return make_token(TOK_NEQ, NULL, line); }
-            else if (lex->src[lex->pos+1] == '=') { lex->pos += 2; return make_token(TOK_LE, NULL, line); }
-            else { lex->pos++; return make_token(TOK_LT, NULL, line); }
+            if (lex->src[lex->pos+1] == '-') { lex->pos += 2; return make_token(TOK_ASSIGN, NULL, orig_line, filename); }
+            else if (lex->src[lex->pos+1] == '>') { lex->pos += 2; return make_token(TOK_NEQ, NULL, orig_line, filename); }
+            else if (lex->src[lex->pos+1] == '=') { lex->pos += 2; return make_token(TOK_LE, NULL, orig_line, filename); }
+            else { lex->pos++; return make_token(TOK_LT, NULL, orig_line, filename); }
         case '>':
-            if (lex->src[lex->pos+1] == '=') { lex->pos += 2; return make_token(TOK_GE, NULL, line); }
-            else { lex->pos++; return make_token(TOK_GT, NULL, line); }
+            if (lex->src[lex->pos+1] == '=') { lex->pos += 2; return make_token(TOK_GE, NULL, orig_line, filename); }
+            else { lex->pos++; return make_token(TOK_GT, NULL, orig_line, filename); }
         case '.':
-            if (lex->src[lex->pos+1] == '.') { lex->pos += 2; return make_token(TOK_DOTDOT, NULL, line); }
-            else { lex->pos++; return make_token(TOK_DOT, NULL, line); }
+            if (lex->src[lex->pos+1] == '.') { lex->pos += 2; return make_token(TOK_DOTDOT, NULL, orig_line, filename); }
+            else { lex->pos++; return make_token(TOK_DOT, NULL, orig_line, filename); }
         default:
             if (isalpha((unsigned char)c) || c == '_') {
                 char *ident = read_ident(lex);
-                #define KW(w,t) if (strcmp(ident, w)==0) { free(ident); return make_token(t, NULL, line); }
+#define KW(w,t) if (strcmp(ident, w)==0) { free(ident); return make_token(t, NULL, orig_line, filename); }
                 KW("Enter", TOK_ENTER) KW("Exit", TOK_EXIT) KW("Run", TOK_RUN) KW("Stop", TOK_STOP)
                 KW("Import", TOK_IMPORT) KW("Const", TOK_CONST) KW("Type", TOK_TYPE) KW("Var", TOK_VAR)
                 KW("Func", TOK_FUNC) KW("Proc", TOK_PROC) KW("Class", TOK_CLASS) KW("Record", TOK_RECORD)
@@ -361,25 +468,31 @@ static Token *get_token(Lexer *lex) {
                 KW("Div", TOK_DIV) KW("Mod", TOK_MOD) KW("Shl", TOK_SHL) KW("Shr", TOK_SHR)
                 KW("Constructor", TOK_CONSTRUCTOR) KW("Destructor", TOK_DESTRUCTOR)
                 KW("True", TOK_TRUE) KW("False", TOK_FALSE)
-                #undef KW
-                return make_token(TOK_IDENT, ident, line);
+#undef KW
+                return make_token(TOK_IDENT, ident, orig_line, filename);
             } else if (isdigit((unsigned char)c)) {
                 char *num = read_number(lex);
-                Token *t = make_token(strchr(num, '.') ? TOK_REAL : TOK_NUMBER, num, line);
+                Token *t = make_token(strchr(num, '.') ? TOK_REAL : TOK_NUMBER, num, orig_line, filename);
                 return t;
             } else {
-                fprintf(stderr, "Unexpected character '%c' (0x%02X) at line %d\n",
-                        (c >= 32 && c < 127) ? c : '?', (unsigned char)c, line);
+                fprintf(stderr, "Unexpected character '%c' (0x%02X) at line %d in %s\n",
+                        (c >= 32 && c < 127) ? c : '?', (unsigned char)c, orig_line, filename ? filename : "<unknown>");
                 exit(1);
             }
     }
 }
 
 static void free_token(Token *tok) {
-    if (tok) { free(tok->value); free(tok); }
+    if (!tok) return;
+    free(tok->value);
+    tok->value = NULL;
+    free(tok->filename);
+    tok->filename = NULL;
+    free(tok);
 }
 
-/* ---------- Diagnostics ---------- */
+/* ================== Diagnostics ================== */
+
 static const char *token_name(TokenType t) {
     switch (t) {
         case TOK_EOF: return "end of file";
@@ -425,13 +538,22 @@ static const char *token_name(TokenType t) {
     }
 }
 
+/* ================== Error Handling ================== */
+
 static void parse_error(Parser *p, const char *fmt, ...) {
-    fprintf(stderr, "Error at line %d: ", p->current ? p->current->line : 0);
-    va_list ap;
-    va_start(ap, fmt);
-    vfprintf(stderr, fmt, ap);
-    va_end(ap);
+    error_count++;
+    if (error_count > 40) {
+        fprintf(stderr, "Too many errors; stopping.\n");
+        exit(1);
+    }
     if (p->current) {
+        fprintf(stderr, "Error in %s at line %d: ",
+                p->current->filename ? p->current->filename : "<unknown>",
+                p->current->line);
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
         if (p->current->type == TOK_IDENT && p->current->value)
             fprintf(stderr, " (found identifier '%s')", p->current->value);
         else if (p->current->type == TOK_STRING && p->current->value)
@@ -440,27 +562,43 @@ static void parse_error(Parser *p, const char *fmt, ...) {
             fprintf(stderr, " (found number %s)", p->current->value);
         else
             fprintf(stderr, " (found %s)", token_name(p->current->type));
+        fprintf(stderr, "\n");
+    } else {
+        fprintf(stderr, "Error: ");
+        va_list ap;
+        va_start(ap, fmt);
+        vfprintf(stderr, fmt, ap);
+        va_end(ap);
+        fprintf(stderr, "\n");
     }
-    fprintf(stderr, "\n");
-    if (p->current && p->current->type == TOK_PROC)
-        fprintf(stderr, "  Hint: use 'Type Name = Proc(...);' for procedure types, "
-                        "or 'Proc Name(...);' for a procedure declaration.\n");
-    if (p->current && p->current->type == TOK_FUNC)
-        fprintf(stderr, "  Hint: use 'Type Name = Func(...): RetType;' for function types.\n");
-    exit(1);
 }
 
-/* ---------- Parser ---------- */
+/* ================== Parser ================== */
+
 static void advance(Parser *p) {
     free_token(p->current);
-    p->current = get_token(&p->lex);
+    p->current = get_token(p->lex);
 }
 
 static void expect(Parser *p, TokenType type, const char *msg) {
     if (p->current->type != type) {
         parse_error(p, "expected %s", msg);
+        while (p->current->type != TOK_EOF &&
+               p->current->type != TOK_SEMICOLON &&
+               p->current->type != TOK_RUN &&
+               p->current->type != TOK_STOP &&
+               p->current->type != TOK_END) {
+            advance(p);
+        }
+        if (p->current->type == TOK_SEMICOLON ||
+            p->current->type == TOK_RUN ||
+            p->current->type == TOK_STOP ||
+            p->current->type == TOK_END) {
+            advance(p);
+        }
+    } else {
+        advance(p);
     }
-    advance(p);
 }
 
 static int match(Parser *p, TokenType type) {
@@ -486,7 +624,7 @@ static ASTNode *parse_primary(Parser *p);
 static ASTNode *parse_binop(Parser *p, int min_prec);
 static ASTNode *parse_class_body(Parser *p, char *class_name);
 
-/* ---------- Parse Class Body ---------- */
+/* ---------- parse_class_body ---------- */
 static ASTNode *parse_class_body(Parser *p, char *class_name) {
     ASTNode *fields = NULL, *methods = NULL, *tail_f = NULL, *tail_m = NULL;
 
@@ -506,6 +644,34 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
             continue;
         }
 
+        /* Property Name: Type [read X] [write Y]; → store as field */
+        if (p->current->type == TOK_IDENT &&
+            (strcmp(p->current->value, "Property") == 0 ||
+             strcmp(p->current->value, "property") == 0)) {
+            advance(p);
+            if (p->current->type != TOK_IDENT) {
+                parse_error(p, "expected property name after Property");
+                continue;
+            }
+            char *name = strdup(p->current->value);
+            advance(p);
+            expect(p, TOK_COLON, "':'");
+            ASTNode *type = parse_type(p);
+            while (p->current->type != TOK_SEMICOLON &&
+                   p->current->type != TOK_EOF &&
+                   p->current->type != TOK_END) {
+                advance(p);
+            }
+            expect(p, TOK_SEMICOLON, "';'");
+            ASTNode *field = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
+            field->data.decl.name = name;
+            field->data.decl.type_expr = type;
+            if (!fields) fields = field;
+            else tail_f->next = field;
+            tail_f = field;
+            continue;
+        }
+
         if (p->current->type == TOK_IDENT) {
             char *name = strdup(p->current->value);
             advance(p);
@@ -519,7 +685,7 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
                 expect(p, TOK_SEMICOLON, "';'");
                 while (p->current->type == TOK_SEMICOLON) advance(p);
 
-                ASTNode *field = new_node(NODE_VAR_DECL, p->current->line);
+                ASTNode *field = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                 field->data.decl.name = name;
                 field->data.decl.type_expr = type;
 
@@ -527,11 +693,10 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
                 else tail_f->next = field;
                 tail_f = field;
             } else {
-                fprintf(stderr,
-                    "Error at line %d: unexpected '%s' in class '%s' (expected field 'name: Type;' or method)\n",
-                    p->current->line, name, class_name);
+                parse_error(p, "unexpected '%s' in class '%s' (expected field 'name: Type;' or method)", name, class_name);
                 free(name);
-                exit(1);
+                advance(p);
+                continue;
             }
         }
         else if (p->current->type == TOK_FUNC || p->current->type == TOK_PROC ||
@@ -554,9 +719,8 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
             } else if (is_dtor) {
                 name = strdup("Destroy");
             } else {
-                fprintf(stderr, "Error at line %d: expected method name in class '%s'\n",
-                        p->current->line, class_name);
-                exit(1);
+                parse_error(p, "expected method name in class '%s'", class_name);
+                break;
             }
 
             ASTNode *params = NULL, *param_tail = NULL;
@@ -566,14 +730,14 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
                     int is_ref = 0;
                     if (match(p, TOK_VAR)) is_ref = 1;
                     if (p->current->type != TOK_IDENT) {
-                        fprintf(stderr, "Error at line %d: expected parameter name\n", p->current->line);
-                        exit(1);
+                        parse_error(p, "expected parameter name");
+                        break;
                     }
                     char *pname = strdup(p->current->value);
                     advance(p);
                     expect(p, TOK_COLON, "':'");
                     ASTNode *ptype = parse_type(p);
-                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     param->data.decl.name = pname;
                     param->data.decl.type_expr = ptype;
                     param->data.decl.value = (ASTNode*)(intptr_t)is_ref;
@@ -599,15 +763,18 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
                 advance(p);
             }
 
-            ASTNode *method = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line);
+            ASTNode *method = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line, p->current->filename);
             if (is_ctor) {
                 method->data.func.name = strdup("Constructor");
                 free(name);
+                name = NULL;
             } else if (is_dtor) {
                 method->data.func.name = strdup("Destructor");
                 free(name);
+                name = NULL;
             } else {
                 method->data.func.name = name;
+                name = NULL;
             }
             method->data.func.params = params;
             method->data.func.return_type = ret_type;
@@ -620,19 +787,14 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
             tail_m = method;
         }
         else {
-            fprintf(stderr,
-                "Unexpected token in class body of '%s' at line %d: %s",
-                class_name, p->current->line, token_name(p->current->type));
-            if (p->current->type == TOK_IDENT && p->current->value)
-                fprintf(stderr, " ('%s')", p->current->value);
-            fprintf(stderr, "\n  Hint: fields are 'name: Type;', methods are 'Proc Name(...);' / 'Func Name(...): Type;'\n");
-            exit(1);
+            parse_error(p, "unexpected token in class body of '%s' (found %s)", class_name, token_name(p->current->type));
+            advance(p);
         }
     }
 
     expect(p, TOK_END, "End");
 
-    ASTNode *class_node = new_node(NODE_CLASS_DECL, p->current->line);
+    ASTNode *class_node = new_node(NODE_CLASS_DECL, p->current->line, p->current->filename);
     class_node->data.class.name = strdup(class_name);
     class_node->data.class.fields = fields;
     class_node->data.class.methods = methods;
@@ -640,7 +802,7 @@ static ASTNode *parse_class_body(Parser *p, char *class_name) {
     return class_node;
 }
 
-/* ---------- Parse Type ---------- */
+/* ---------- parse_type ---------- */
 static ASTNode *parse_type(Parser *p) {
     ASTNode *type = NULL;
     switch (p->current->type) {
@@ -653,7 +815,7 @@ static ASTNode *parse_type(Parser *p) {
             expect(p, TOK_RBRACKET, "']'");
             if (match(p, TOK_OF)) { }
             ASTNode *base = parse_type(p);
-            type = new_node(NODE_ARRAY_TYPE, p->current->line);
+            type = new_node(NODE_ARRAY_TYPE, p->current->line, p->current->filename);
             type->data.array_type.low = low;
             type->data.array_type.high = high;
             type->data.array_type.base = base;
@@ -662,7 +824,7 @@ static ASTNode *parse_type(Parser *p) {
         case TOK_CARET: {
             advance(p);
             ASTNode *base = parse_type(p);
-            type = new_node(NODE_POINTER_TYPE, p->current->line);
+            type = new_node(NODE_POINTER_TYPE, p->current->line, p->current->filename);
             type->data.pointer_type.base = base;
             break;
         }
@@ -675,7 +837,7 @@ static ASTNode *parse_type(Parser *p) {
                 expect(p, TOK_COLON, "':'");
                 ASTNode *ftype = parse_type(p);
                 expect(p, TOK_SEMICOLON, "';'");
-                ASTNode *field = new_node(NODE_VAR_DECL, p->current->line);
+                ASTNode *field = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                 field->data.decl.name = fname;
                 field->data.decl.type_expr = ftype;
                 if (!fields) fields = field;
@@ -683,7 +845,7 @@ static ASTNode *parse_type(Parser *p) {
                 tail = field;
             }
             expect(p, TOK_END, "End");
-            type = new_node(NODE_RECORD_DECL, p->current->line);
+            type = new_node(NODE_RECORD_DECL, p->current->line, p->current->filename);
             type->data.record.fields = fields;
             break;
         }
@@ -714,7 +876,7 @@ static ASTNode *parse_type(Parser *p) {
         case TOK_IDENT: {
             char *name = strdup(p->current->value);
             advance(p);
-            type = new_node(NODE_SIMPLE_TYPE, p->current->line);
+            type = new_node(NODE_SIMPLE_TYPE, p->current->line, p->current->filename);
             type->data.simple_type.name = name;
             break;
         }
@@ -730,12 +892,13 @@ static ASTNode *parse_type(Parser *p) {
                     if (match(p, TOK_VAR)) is_ref = 1;
                     if (p->current->type != TOK_IDENT) {
                         parse_error(p, "expected parameter name in procedure/function type");
+                        break;
                     }
                     char *pname = strdup(p->current->value);
                     advance(p);
                     expect(p, TOK_COLON, "':'");
                     ASTNode *ptype = parse_type(p);
-                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     param->data.decl.name = pname;
                     param->data.decl.type_expr = ptype;
                     param->data.decl.value = (ASTNode*)(intptr_t)is_ref;
@@ -752,18 +915,20 @@ static ASTNode *parse_type(Parser *p) {
                 expect(p, TOK_COLON, "':' after function type parameters");
                 ret = parse_type(p);
             }
-            type = new_node(is_func ? NODE_FUNC_TYPE : NODE_PROC_TYPE, p->current->line);
+            type = new_node(is_func ? NODE_FUNC_TYPE : NODE_PROC_TYPE, p->current->line, p->current->filename);
             type->data.proc_type.params = params;
             type->data.proc_type.return_type = ret;
             break;
         }
         default:
-            parse_error(p, "expected a type (Integer, String, Array, Record, Class, Proc, Func, ^T, …)");
+            parse_error(p, "expected a type");
+            type = new_node(NODE_SIMPLE_TYPE, p->current->line, p->current->filename);
+            type->data.simple_type.name = strdup("int");
     }
     return type;
 }
 
-/* ---------- Parse Expression ---------- */
+/* ---------- parse_expression ---------- */
 static int binop_prec(TokenType op) {
     switch (op) {
         case TOK_OR: return 1;
@@ -781,37 +946,37 @@ static ASTNode *parse_primary(Parser *p) {
     ASTNode *node = NULL;
     switch (p->current->type) {
         case TOK_NUMBER: {
-            node = new_node(NODE_NUMBER, p->current->line);
+            node = new_node(NODE_NUMBER, p->current->line, p->current->filename);
             node->data.number.value = strdup(p->current->value);
             advance(p);
             break;
         }
         case TOK_REAL: {
-            node = new_node(NODE_REAL, p->current->line);
+            node = new_node(NODE_REAL, p->current->line, p->current->filename);
             node->data.number.value = strdup(p->current->value);
             advance(p);
             break;
         }
         case TOK_STRING: {
-            node = new_node(NODE_STRING, p->current->line);
+            node = new_node(NODE_STRING, p->current->line, p->current->filename);
             node->data.string.value = strdup(p->current->value);
             advance(p);
             break;
         }
         case TOK_TRUE: {
-            node = new_node(NODE_NUMBER, p->current->line);
+            node = new_node(NODE_NUMBER, p->current->line, p->current->filename);
             node->data.number.value = strdup("true");
             advance(p);
             break;
         }
         case TOK_FALSE: {
-            node = new_node(NODE_NUMBER, p->current->line);
+            node = new_node(NODE_NUMBER, p->current->line, p->current->filename);
             node->data.number.value = strdup("false");
             advance(p);
             break;
         }
         case TOK_IDENT: {
-            node = new_node(NODE_VAR, p->current->line);
+            node = new_node(NODE_VAR, p->current->line, p->current->filename);
             node->data.var.name = strdup(p->current->value);
             advance(p);
             while (1) {
@@ -819,7 +984,7 @@ static ASTNode *parse_primary(Parser *p) {
                     advance(p);
                     ASTNode *idx = parse_expression(p);
                     expect(p, TOK_RBRACKET, "']'");
-                    ASTNode *arr = new_node(NODE_ARRAY_INDEX, p->current->line);
+                    ASTNode *arr = new_node(NODE_ARRAY_INDEX, p->current->line, p->current->filename);
                     arr->data.array_index.array_expr = node;
                     arr->data.array_index.index_expr = idx;
                     node = arr;
@@ -827,13 +992,13 @@ static ASTNode *parse_primary(Parser *p) {
                     advance(p);
                     char *field = strdup(p->current->value);
                     advance(p);
-                    ASTNode *rec = new_node(NODE_RECORD_FIELD, p->current->line);
+                    ASTNode *rec = new_node(NODE_RECORD_FIELD, p->current->line, p->current->filename);
                     rec->data.record_field.record_expr = node;
                     rec->data.record_field.field = field;
                     node = rec;
                 } else if (p->current->type == TOK_CARET) {
                     advance(p);
-                    ASTNode *deref = new_node(NODE_POINTER_DEREF, p->current->line);
+                    ASTNode *deref = new_node(NODE_POINTER_DEREF, p->current->line, p->current->filename);
                     deref->data.pointer_deref.ptr_expr = node;
                     node = deref;
                 } else if (p->current->type == TOK_LPAREN) {
@@ -848,7 +1013,7 @@ static ASTNode *parse_primary(Parser *p) {
                         else break;
                     }
                     expect(p, TOK_RPAREN, "')'");
-                    ASTNode *call = new_node(NODE_CALL, p->current->line);
+                    ASTNode *call = new_node(NODE_CALL, p->current->line, p->current->filename);
                     call->data.call.func = node;
                     call->data.call.args = args;
                     node = call;
@@ -861,7 +1026,7 @@ static ASTNode *parse_primary(Parser *p) {
         case TOK_AT: {
             advance(p);
             ASTNode *operand = parse_primary(p);
-            ASTNode *addr = new_node(NODE_UNOP, p->current->line);
+            ASTNode *addr = new_node(NODE_UNOP, p->current->line, p->current->filename);
             addr->data.unop.op = TOK_AT;
             addr->data.unop.operand = operand;
             node = addr;
@@ -870,7 +1035,7 @@ static ASTNode *parse_primary(Parser *p) {
         case TOK_NOT: {
             advance(p);
             ASTNode *operand = parse_primary(p);
-            ASTNode *un = new_node(NODE_UNOP, p->current->line);
+            ASTNode *un = new_node(NODE_UNOP, p->current->line, p->current->filename);
             un->data.unop.op = TOK_NOT;
             un->data.unop.operand = operand;
             node = un;
@@ -879,7 +1044,7 @@ static ASTNode *parse_primary(Parser *p) {
         case TOK_MINUS: {
             advance(p);
             ASTNode *operand = parse_primary(p);
-            ASTNode *un = new_node(NODE_UNOP, p->current->line);
+            ASTNode *un = new_node(NODE_UNOP, p->current->line, p->current->filename);
             un->data.unop.op = TOK_MINUS;
             un->data.unop.operand = operand;
             node = un;
@@ -901,7 +1066,7 @@ static ASTNode *parse_primary(Parser *p) {
                 else break;
             }
             expect(p, TOK_RPAREN, "')'");
-            ASTNode *new_expr = new_node(NODE_NEW, p->current->line);
+            ASTNode *new_expr = new_node(NODE_NEW, p->current->line, p->current->filename);
             new_expr->data.new_stmt.class_name = class_name;
             new_expr->data.new_stmt.args = args;
             node = new_expr;
@@ -919,7 +1084,7 @@ static ASTNode *parse_primary(Parser *p) {
                 te = parse_type(p);
             }
             expect(p, TOK_RPAREN, "')'");
-            node = new_node(NODE_SIZEOF, p->current->line);
+            node = new_node(NODE_SIZEOF, p->current->line, p->current->filename);
             node->data.size_offset.type_expr = te;
             node->data.size_offset.type_name = tname;
             node->data.size_offset.field_name = NULL;
@@ -933,6 +1098,8 @@ static ASTNode *parse_primary(Parser *p) {
         }
         default:
             parse_error(p, "unexpected token in expression");
+            node = new_node(NODE_NUMBER, p->current->line, p->current->filename);
+            node->data.number.value = strdup("0");
     }
     return node;
 }
@@ -945,7 +1112,7 @@ static ASTNode *parse_binop(Parser *p, int min_prec) {
         if (prec < min_prec) break;
         advance(p);
         ASTNode *right = parse_binop(p, prec + 1);
-        ASTNode *bin = new_node(NODE_BINOP, p->current->line);
+        ASTNode *bin = new_node(NODE_BINOP, p->current->line, p->current->filename);
         bin->data.binop.left = left;
         bin->data.binop.right = right;
         bin->data.binop.op = op;
@@ -958,20 +1125,20 @@ static ASTNode *parse_expression(Parser *p) {
     return parse_binop(p, 1);
 }
 
-/* ---------- Parse Statement ---------- */
+/* ---------- parse_statement ---------- */
 static ASTNode *parse_statement(Parser *p) {
     ASTNode *stmt = NULL;
     switch (p->current->type) {
         case TOK_BREAK:
             advance(p);
             expect_stmt_end(p);
-            stmt = new_node(NODE_BREAK, p->current->line);
+            stmt = new_node(NODE_BREAK, p->current->line, p->current->filename);
             break;
 
         case TOK_CONTINUE:
             advance(p);
             expect_stmt_end(p);
-            stmt = new_node(NODE_CONTINUE, p->current->line);
+            stmt = new_node(NODE_CONTINUE, p->current->line, p->current->filename);
             break;
 
         case TOK_RUN: {
@@ -990,7 +1157,7 @@ static ASTNode *parse_statement(Parser *p) {
             if (match(p, TOK_ELSE)) {
                 else_stmt = parse_statement(p);
             }
-            stmt = new_node(NODE_IF, p->current->line);
+            stmt = new_node(NODE_IF, p->current->line, p->current->filename);
             stmt->data.if_stmt.cond = cond;
             stmt->data.if_stmt.then_stmt = then_stmt;
             stmt->data.if_stmt.else_stmt = else_stmt;
@@ -1007,14 +1174,14 @@ static ASTNode *parse_statement(Parser *p) {
             if (match(p, TOK_TO)) downto = 0;
             else if (match(p, TOK_DOWNTO)) downto = 1;
             else {
-                fprintf(stderr, "Expected To or Downto at line %d\n", p->current->line);
-                exit(1);
+                parse_error(p, "expected To or Downto");
+                break;
             }
             ASTNode *end = parse_expression(p);
             expect(p, TOK_DO, "Do");
             ASTNode *body = parse_statement(p);
             match(p, TOK_SEMICOLON);
-            stmt = new_node(NODE_FOR, p->current->line);
+            stmt = new_node(NODE_FOR, p->current->line, p->current->filename);
             stmt->data.for_stmt.var = var;
             stmt->data.for_stmt.start = start;
             stmt->data.for_stmt.end = end;
@@ -1029,7 +1196,7 @@ static ASTNode *parse_statement(Parser *p) {
             expect(p, TOK_DO, "Do");
             ASTNode *body = parse_statement(p);
             match(p, TOK_SEMICOLON);
-            stmt = new_node(NODE_WHILE, p->current->line);
+            stmt = new_node(NODE_WHILE, p->current->line, p->current->filename);
             stmt->data.while_stmt.cond = cond;
             stmt->data.while_stmt.body = body;
             break;
@@ -1047,7 +1214,7 @@ static ASTNode *parse_statement(Parser *p) {
             expect(p, TOK_UNTIL, "Until");
             ASTNode *cond = parse_expression(p);
             expect(p, TOK_SEMICOLON, "';'");
-            stmt = new_node(NODE_REPEAT, p->current->line);
+            stmt = new_node(NODE_REPEAT, p->current->line, p->current->filename);
             stmt->data.repeat_stmt.body = body_head;
             stmt->data.repeat_stmt.cond = cond;
             break;
@@ -1059,7 +1226,7 @@ static ASTNode *parse_statement(Parser *p) {
             expect(p, TOK_DO, "Do");
             ASTNode *body = parse_statement(p);
             expect_stmt_end(p);
-            stmt = new_node(NODE_WITH, p->current->line);
+            stmt = new_node(NODE_WITH, p->current->line, p->current->filename);
             stmt->data.with_stmt.expr = expr;
             stmt->data.with_stmt.body = body;
             break;
@@ -1085,7 +1252,7 @@ static ASTNode *parse_statement(Parser *p) {
             }
             expect(p, TOK_STOP, "Stop");
             expect(p, TOK_SEMICOLON, "';'");
-            stmt = new_node(NODE_ATTEMPT, p->current->line);
+            stmt = new_node(NODE_ATTEMPT, p->current->line, p->current->filename);
             stmt->data.attempt.body = body_head;
             stmt->data.attempt.err_var = err_var;
             stmt->data.attempt.recover = recover_body;
@@ -1106,7 +1273,7 @@ static ASTNode *parse_statement(Parser *p) {
             }
             expect(p, TOK_RPAREN, "')'");
             expect_stmt_end(p);
-            stmt = new_node(NODE_PRINT, p->current->line);
+            stmt = new_node(NODE_PRINT, p->current->line, p->current->filename);
             stmt->data.print.expr = args;
             break;
         }
@@ -1117,12 +1284,12 @@ static ASTNode *parse_statement(Parser *p) {
             ASTNode *var = parse_expression(p);
             if (var->type != NODE_VAR && var->type != NODE_ARRAY_INDEX &&
                 var->type != NODE_RECORD_FIELD && var->type != NODE_POINTER_DEREF) {
-                fprintf(stderr, "Input requires a variable at line %d\n", p->current->line);
-                exit(1);
+                parse_error(p, "Input requires a variable");
+                break;
             }
             expect(p, TOK_RPAREN, "')'");
             expect_stmt_end(p);
-            stmt = new_node(NODE_INPUT, p->current->line);
+            stmt = new_node(NODE_INPUT, p->current->line, p->current->filename);
             stmt->data.input_var.var = var;
             break;
         }
@@ -1132,7 +1299,7 @@ static ASTNode *parse_statement(Parser *p) {
             char *code = strdup(p->current->value);
             advance(p);
             expect_stmt_end(p);
-            stmt = new_node(NODE_ASM, p->current->line);
+            stmt = new_node(NODE_ASM, p->current->line, p->current->filename);
             stmt->data.asm.code = code;
             break;
         }
@@ -1143,7 +1310,7 @@ static ASTNode *parse_statement(Parser *p) {
             ASTNode *expr = parse_expression(p);
             expect(p, TOK_RPAREN, "')'");
             expect_stmt_end(p);
-            stmt = new_node(NODE_DISPOSE, p->current->line);
+            stmt = new_node(NODE_DISPOSE, p->current->line, p->current->filename);
             stmt->data.dispose.ptr = expr;
             break;
         }
@@ -1154,25 +1321,27 @@ static ASTNode *parse_statement(Parser *p) {
                 advance(p);
                 ASTNode *rhs = parse_expression(p);
                 expect_stmt_end(p);
-                stmt = new_node(NODE_ASSIGN, p->current->line);
+                stmt = new_node(NODE_ASSIGN, p->current->line, p->current->filename);
                 stmt->data.assign.lvalue = expr;
                 stmt->data.assign.expr = rhs;
             } else {
                 expect_stmt_end(p);
-                stmt = new_node(NODE_EXPR_STMT, p->current->line);
+                stmt = new_node(NODE_EXPR_STMT, p->current->line, p->current->filename);
                 stmt->data.expr_stmt.expr = expr;
             }
             break;
         }
 
         default: {
-            parse_error(p, "unexpected token in statement — expected If, For, While, assignment, Print, …");
+            parse_error(p, "unexpected token in statement");
+            advance(p);
+            stmt = new_node(NODE_EMPTY, p->current->line, p->current->filename);
         }
     }
     return stmt;
 }
 
-/* ---------- Parse Block ---------- */
+/* ---------- parse_block ---------- */
 static ASTNode *parse_block(Parser *p) {
     ASTNode *head = NULL, *tail = NULL;
     while (p->current->type != TOK_STOP && p->current->type != TOK_EOF) {
@@ -1182,12 +1351,12 @@ static ASTNode *parse_block(Parser *p) {
         tail = stmt;
     }
     expect(p, TOK_STOP, "Stop");
-    ASTNode *block = new_node(NODE_BLOCK, p->current->line);
+    ASTNode *block = new_node(NODE_BLOCK, p->current->line, p->current->filename);
     block->data.block.stmt_list = head;
     return block;
 }
 
-/* ---------- Parse Program ---------- */
+/* ---------- parse_program ---------- */
 static ASTNode *parse_program(Parser *p) {
     ASTNode *head = NULL, *tail = NULL;
 
@@ -1198,25 +1367,28 @@ static ASTNode *parse_program(Parser *p) {
             advance(p);
             char *path = NULL;
             if (p->current->type == TOK_LT) {
-                const char *src = p->lex.src;
-                int pos = p->lex.pos;
+                const char *src = p->lex->src;
+                int pos = p->lex->pos;
                 int start = pos;
                 while (src[pos] && src[pos] != '>') pos++;
                 if (src[pos] != '>') {
-                    fprintf(stderr, "Error: unmatched '<' in import at line %d\n", p->current->line);
-                    exit(1);
+                    parse_error(p, "unmatched '<' in import");
+                    break;
                 }
                 char *name = malloc(pos - start + 1);
                 strncpy(name, src + start, pos - start);
                 name[pos - start] = '\0';
-                path = malloc(strlen(name) + 4);
-                sprintf(path, "<%s>", name);
+                {
+                    size_t plen = strlen(name) + 4; /* < + name + > + NUL */
+                    path = malloc(plen);
+                    if (path) snprintf(path, plen, "<%s>", name);
+                }
                 free(name);
                 while (p->current->type != TOK_GT && p->current->type != TOK_EOF) advance(p);
                 if (p->current->type == TOK_GT) advance(p);
                 else {
-                    fprintf(stderr, "Error: expected '>' in import at line %d\n", p->current->line);
-                    exit(1);
+                    parse_error(p, "expected '>' in import");
+                    break;
                 }
             } else if (p->current->type == TOK_STRING) {
                 path = strdup(p->current->value);
@@ -1226,7 +1398,7 @@ static ASTNode *parse_program(Parser *p) {
                 advance(p);
             }
             expect(p, TOK_SEMICOLON, "';'");
-            decl = new_node(NODE_IMPORT, p->current->line);
+            decl = new_node(NODE_IMPORT, p->current->line, p->current->filename);
             decl->data.import.path = path;
         }
         else if (p->current->type == TOK_CONST) {
@@ -1236,7 +1408,7 @@ static ASTNode *parse_program(Parser *p) {
             expect(p, TOK_EQUALS, "'='");
             ASTNode *val = parse_expression(p);
             expect(p, TOK_SEMICOLON, "';'");
-            decl = new_node(NODE_CONST_DECL, p->current->line);
+            decl = new_node(NODE_CONST_DECL, p->current->line, p->current->filename);
             decl->data.decl.name = name;
             decl->data.decl.value = val;
         }
@@ -1271,7 +1443,7 @@ static ASTNode *parse_program(Parser *p) {
                     type = parse_type(p);
                 }
                 expect(p, TOK_SEMICOLON, "';'");
-                ASTNode *tdecl = new_node(NODE_TYPE_DECL, p->current->line);
+                ASTNode *tdecl = new_node(NODE_TYPE_DECL, p->current->line, p->current->filename);
                 tdecl->data.decl.name = name;
                 tdecl->data.decl.type_expr = type;
                 if (!head) head = tdecl;
@@ -1296,7 +1468,7 @@ static ASTNode *parse_program(Parser *p) {
                     abs_expr = parse_expression(p);
                 }
                 expect(p, TOK_SEMICOLON, "';'");
-                ASTNode *vdecl = new_node(NODE_VAR_DECL, p->current->line);
+                ASTNode *vdecl = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                 vdecl->data.decl.name = name;
                 vdecl->data.decl.type_expr = type;
                 vdecl->data.decl.value = abs_expr;
@@ -1314,6 +1486,7 @@ static ASTNode *parse_program(Parser *p) {
             advance(p);
             if (p->current->type != TOK_IDENT) {
                 parse_error(p, "expected identifier after Func/Proc");
+                continue;
             }
             char *first_name = strdup(p->current->value);
             advance(p);
@@ -1323,8 +1496,10 @@ static ASTNode *parse_program(Parser *p) {
                 is_method = 1;
                 class_name = first_name;
                 advance(p);
-                if (p->current->type != TOK_IDENT)
+                if (p->current->type != TOK_IDENT) {
                     parse_error(p, "expected method name after '.'");
+                    continue;
+                }
                 func_name = strdup(p->current->value);
                 advance(p);
             } else {
@@ -1336,13 +1511,15 @@ static ASTNode *parse_program(Parser *p) {
                 while (p->current->type != TOK_RPAREN) {
                     int is_ref = 0;
                     if (match(p, TOK_VAR)) is_ref = 1;
-                    if (p->current->type != TOK_IDENT)
+                    if (p->current->type != TOK_IDENT) {
                         parse_error(p, "expected parameter name");
+                        break;
+                    }
                     char *pname = strdup(p->current->value);
                     advance(p);
                     expect(p, TOK_COLON, "':'");
                     ASTNode *ptype = parse_type(p);
-                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     param->data.decl.name = pname;
                     param->data.decl.type_expr = ptype;
                     param->data.decl.value = (ASTNode*)(intptr_t)is_ref;
@@ -1369,7 +1546,7 @@ static ASTNode *parse_program(Parser *p) {
                     expect(p, TOK_COLON, "':'");
                     ASTNode *vtype = parse_type(p);
                     expect(p, TOK_SEMICOLON, "';'");
-                    ASTNode *v = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *v = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     v->data.decl.name = vname;
                     v->data.decl.type_expr = vtype;
                     if (!locals) locals = v;
@@ -1386,15 +1563,18 @@ static ASTNode *parse_program(Parser *p) {
                 last->next = body->data.block.stmt_list;
                 body->data.block.stmt_list = locals;
             }
-            decl = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line);
+            decl = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line, p->current->filename);
             if (is_ctor) {
                 decl->data.func.name = strdup("Constructor");
                 free(func_name);
+                func_name = NULL;
             } else if (is_dtor) {
                 decl->data.func.name = strdup("Destructor");
                 free(func_name);
+                func_name = NULL;
             } else {
                 decl->data.func.name = func_name;
+                func_name = NULL;
             }
             decl->data.func.params = params;
             decl->data.func.return_type = ret_type;
@@ -1403,7 +1583,9 @@ static ASTNode *parse_program(Parser *p) {
             decl->data.func.class_name = class_name;
         }
         else {
-            parse_error(p, "unexpected declaration — expected Import, Const, Type, Var, Func, Proc, or Enter");
+            parse_error(p, "unexpected declaration");
+            advance(p);
+            continue;
         }
 
         if (decl) {
@@ -1415,10 +1597,14 @@ static ASTNode *parse_program(Parser *p) {
 
     /* ---------- "Enter" ---------- */
     expect(p, TOK_ENTER, "Enter");
-    expect(p, TOK_IDENT, "identifier");
+    if (p->current->type == TOK_IDENT) {
+        advance(p);  /* program name is optional metadata; discard */
+    } else {
+        parse_error(p, "expected identifier after Enter");
+    }
     expect(p, TOK_SEMICOLON, "';'");
 
-    /* ---------- Declarations AFTER "Enter" ---------- */
+    /* ---------- Declarations after Enter ---------- */
     while (p->current->type != TOK_RUN && p->current->type != TOK_EOF) {
         ASTNode *decl = NULL;
 
@@ -1426,25 +1612,28 @@ static ASTNode *parse_program(Parser *p) {
             advance(p);
             char *path = NULL;
             if (p->current->type == TOK_LT) {
-                const char *src = p->lex.src;
-                int pos = p->lex.pos;
+                const char *src = p->lex->src;
+                int pos = p->lex->pos;
                 int start = pos;
                 while (src[pos] && src[pos] != '>') pos++;
                 if (src[pos] != '>') {
-                    fprintf(stderr, "Error: unmatched '<' in import at line %d\n", p->current->line);
-                    exit(1);
+                    parse_error(p, "unmatched '<' in import");
+                    break;
                 }
                 char *name = malloc(pos - start + 1);
                 strncpy(name, src + start, pos - start);
                 name[pos - start] = '\0';
-                path = malloc(strlen(name) + 4);
-                sprintf(path, "<%s>", name);
+                {
+                    size_t plen = strlen(name) + 4; /* < + name + > + NUL */
+                    path = malloc(plen);
+                    if (path) snprintf(path, plen, "<%s>", name);
+                }
                 free(name);
                 while (p->current->type != TOK_GT && p->current->type != TOK_EOF) advance(p);
                 if (p->current->type == TOK_GT) advance(p);
                 else {
-                    fprintf(stderr, "Error: expected '>' in import at line %d\n", p->current->line);
-                    exit(1);
+                    parse_error(p, "expected '>' in import");
+                    break;
                 }
             } else if (p->current->type == TOK_STRING) {
                 path = strdup(p->current->value);
@@ -1454,7 +1643,7 @@ static ASTNode *parse_program(Parser *p) {
                 advance(p);
             }
             expect(p, TOK_SEMICOLON, "';'");
-            decl = new_node(NODE_IMPORT, p->current->line);
+            decl = new_node(NODE_IMPORT, p->current->line, p->current->filename);
             decl->data.import.path = path;
         }
         else if (p->current->type == TOK_CONST) {
@@ -1464,7 +1653,7 @@ static ASTNode *parse_program(Parser *p) {
             expect(p, TOK_EQUALS, "'='");
             ASTNode *val = parse_expression(p);
             expect(p, TOK_SEMICOLON, "';'");
-            decl = new_node(NODE_CONST_DECL, p->current->line);
+            decl = new_node(NODE_CONST_DECL, p->current->line, p->current->filename);
             decl->data.decl.name = name;
             decl->data.decl.value = val;
         }
@@ -1499,7 +1688,7 @@ static ASTNode *parse_program(Parser *p) {
                     type = parse_type(p);
                 }
                 expect(p, TOK_SEMICOLON, "';'");
-                ASTNode *tdecl = new_node(NODE_TYPE_DECL, p->current->line);
+                ASTNode *tdecl = new_node(NODE_TYPE_DECL, p->current->line, p->current->filename);
                 tdecl->data.decl.name = name;
                 tdecl->data.decl.type_expr = type;
                 if (!head) head = tdecl;
@@ -1525,7 +1714,7 @@ static ASTNode *parse_program(Parser *p) {
                     abs_expr = parse_expression(p);
                 }
                 expect(p, TOK_SEMICOLON, "';'");
-                ASTNode *vdecl = new_node(NODE_VAR_DECL, p->current->line);
+                ASTNode *vdecl = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                 vdecl->data.decl.name = name;
                 vdecl->data.decl.type_expr = type;
                 vdecl->data.decl.value = abs_expr;
@@ -1548,9 +1737,8 @@ static ASTNode *parse_program(Parser *p) {
             int is_dtor = (p->current->type == TOK_DESTRUCTOR);
             advance(p);
             if (p->current->type != TOK_IDENT) {
-                fprintf(stderr, "Error at line %d: expected identifier after Func/Proc/Constructor\n",
-                        p->current->line);
-                exit(1);
+                parse_error(p, "expected identifier after Func/Proc/Constructor");
+                continue;
             }
             char *first_name = strdup(p->current->value);
             advance(p);
@@ -1561,9 +1749,8 @@ static ASTNode *parse_program(Parser *p) {
                 class_name = first_name;
                 advance(p);
                 if (p->current->type != TOK_IDENT) {
-                    fprintf(stderr, "Error at line %d: expected method name after '.'\n",
-                            p->current->line);
-                    exit(1);
+                    parse_error(p, "expected method name after '.'");
+                    continue;
                 }
                 func_name = strdup(p->current->value);
                 advance(p);
@@ -1577,15 +1764,14 @@ static ASTNode *parse_program(Parser *p) {
                     int is_ref = 0;
                     if (match(p, TOK_VAR)) is_ref = 1;
                     if (p->current->type != TOK_IDENT) {
-                        fprintf(stderr, "Error at line %d: expected parameter name\n",
-                                p->current->line);
-                        exit(1);
+                        parse_error(p, "expected parameter name");
+                        break;
                     }
                     char *pname = strdup(p->current->value);
                     advance(p);
                     expect(p, TOK_COLON, "':'");
                     ASTNode *ptype = parse_type(p);
-                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *param = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     param->data.decl.name = pname;
                     param->data.decl.type_expr = ptype;
                     param->data.decl.value = (ASTNode*)(intptr_t)is_ref;
@@ -1612,7 +1798,7 @@ static ASTNode *parse_program(Parser *p) {
                     expect(p, TOK_COLON, "':'");
                     ASTNode *vtype = parse_type(p);
                     expect(p, TOK_SEMICOLON, "';'");
-                    ASTNode *v = new_node(NODE_VAR_DECL, p->current->line);
+                    ASTNode *v = new_node(NODE_VAR_DECL, p->current->line, p->current->filename);
                     v->data.decl.name = vname;
                     v->data.decl.type_expr = vtype;
                     if (!locals) locals = v;
@@ -1629,15 +1815,18 @@ static ASTNode *parse_program(Parser *p) {
                 last->next = body->data.block.stmt_list;
                 body->data.block.stmt_list = locals;
             }
-            decl = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line);
+            decl = new_node(is_func ? NODE_FUNC_DECL : NODE_PROC_DECL, p->current->line, p->current->filename);
             if (is_ctor) {
                 decl->data.func.name = strdup("Constructor");
                 free(func_name);
+                func_name = NULL;
             } else if (is_dtor) {
                 decl->data.func.name = strdup("Destructor");
                 free(func_name);
+                func_name = NULL;
             } else {
                 decl->data.func.name = func_name;
+                func_name = NULL;
             }
             decl->data.func.params = params;
             decl->data.func.return_type = ret_type;
@@ -1663,18 +1852,19 @@ static ASTNode *parse_program(Parser *p) {
     expect(p, TOK_EXIT, "Exit");
     expect(p, TOK_DOT, "'.'");
 
-    ASTNode *main_node = new_node(NODE_MAIN_BODY, p->current->line);
+    ASTNode *main_node = new_node(NODE_MAIN_BODY, p->current->line, p->current->filename);
     main_node->data.block.stmt_list = main_body->data.block.stmt_list;
     if (!head) head = main_node;
     else tail->next = main_node;
     tail = main_node;
 
-    ASTNode *prog = new_node(NODE_PROGRAM, p->current->line);
+    ASTNode *prog = new_node(NODE_PROGRAM, p->current->line, p->current->filename);
     prog->data.block.stmt_list = head;
     return prog;
 }
 
-/* ---------- Emitter ---------- */
+/* ================== Emitter ================== */
+
 static FILE *out;
 static int indent_level = 0;
 static int in_function = 0;
@@ -2503,8 +2693,28 @@ static void emit_cpp(ASTNode *ast, const char *filename) {
     printf("Generated: %s\n", filename);
 }
 
-/* ---------- Textual Preprocessor for .vtx imports ---------- */
+/* ================== Preprocessor ================== */
+
 static int preprocess_depth = 0;
+
+/* Append raw bytes to dynamic buffer */
+static void pp_append(char **buf, size_t *len, const char *data, size_t n) {
+    if (n == 0) return;
+    char *nb = realloc(*buf, *len + n + 1);
+    if (!nb) { fprintf(stderr, "Out of memory\n"); exit(1); }
+    *buf = nb;
+    memcpy(*buf + *len, data, n);
+    *len += n;
+    (*buf)[*len] = '\0';
+}
+
+static void pp_append_str(char **buf, size_t *len, const char *s) {
+    pp_append(buf, len, s, strlen(s));
+}
+
+static void pp_append_char(char **buf, size_t *len, char c) {
+    pp_append(buf, len, &c, 1);
+}
 
 static char *preprocess_file(const char *filename) {
     if (preprocess_depth > 32) {
@@ -2512,111 +2722,139 @@ static char *preprocess_file(const char *filename) {
         exit(1);
     }
     preprocess_depth++;
+
     FILE *f = fopen(filename, "rb");
     if (!f) {
         fprintf(stderr, "Cannot open file: %s\n", filename);
         exit(1);
     }
     fseek(f, 0, SEEK_END);
-    long len = ftell(f);
+    long flen = ftell(f);
     fseek(f, 0, SEEK_SET);
-    char *data = malloc((size_t)len + 1);
-    if (!data) {
-        fclose(f);
-        fprintf(stderr, "Out of memory\n");
-        exit(1);
-    }
-    size_t n = fread(data, 1, (size_t)len, f);
-    data[n] = '\0';
+    char *data = malloc((size_t)flen + 1);
+    if (!data) { fclose(f); fprintf(stderr, "Out of memory\n"); exit(1); }
+    size_t nread = fread(data, 1, (size_t)flen, f);
+    data[nread] = '\0';
     fclose(f);
 
     char *result = NULL;
     size_t result_len = 0;
+
+    /* Start of this file */
+    {
+        char *esc = escape_for_line_directive(filename);
+        char dir[2048];
+        snprintf(dir, sizeof(dir), "#line 1 \"%s\"\n", esc ? esc : filename);
+        pp_append_str(&result, &result_len, dir);
+        free(esc);
+    }
+
+    /* Track ORIGINAL line number in THIS file (not combined buffer) */
+    int src_line = 1;
     const char *ptr = data;
+
     while (*ptr) {
+        /* Block comment { ... } — copy as-is, count newlines for src_line */
         if (*ptr == '{') {
-            result = realloc(result, result_len + 2);
-            result[result_len++] = *ptr++;
-            result[result_len] = '\0';
+            pp_append_char(&result, &result_len, *ptr++);
             while (*ptr && *ptr != '}') {
-                result = realloc(result, result_len + 2);
-                result[result_len++] = *ptr++;
-                result[result_len] = '\0';
+                if (*ptr == '\n') src_line++;
+                pp_append_char(&result, &result_len, *ptr++);
             }
-            if (*ptr == '}') {
-                result = realloc(result, result_len + 2);
-                result[result_len++] = *ptr++;
-                result[result_len] = '\0';
-            }
+            if (*ptr == '}')
+                pp_append_char(&result, &result_len, *ptr++);
             continue;
         }
+
+        /* Line comment // ... */
         if (*ptr == '/' && ptr[1] == '/') {
-            while (*ptr && *ptr != '\n') {
-                result = realloc(result, result_len + 2);
-                result[result_len++] = *ptr++;
-                result[result_len] = '\0';
-            }
+            while (*ptr && *ptr != '\n')
+                pp_append_char(&result, &result_len, *ptr++);
             continue;
         }
-        while (isspace((unsigned char)*ptr)) {
-            result = realloc(result, result_len + 2);
-            result[result_len++] = *ptr++;
-            result[result_len] = '\0';
+
+        /* Newline in source → bump src_line */
+        if (*ptr == '\n') {
+            pp_append_char(&result, &result_len, *ptr++);
+            src_line++;
+            continue;
         }
-        if (strncmp(ptr, "Import", 6) == 0 && (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '"')) {
+
+        /* Import "file.vtx";  or  Import <header>; */
+        if (strncmp(ptr, "Import", 6) == 0 &&
+            (ptr[6] == ' ' || ptr[6] == '\t' || ptr[6] == '"' || ptr[6] == '<')) {
             const char *start = ptr;
             ptr += 6;
-            while (*ptr && isspace((unsigned char)*ptr)) ptr++;
+            while (*ptr == ' ' || *ptr == '\t') ptr++;
+
             if (*ptr == '"') {
                 ptr++;
                 const char *fname_start = ptr;
-                while (*ptr && *ptr != '"') ptr++;
+                while (*ptr && *ptr != '"' && *ptr != '\n') ptr++;
                 if (*ptr == '"') {
                     char *fname = my_strndup(fname_start, (size_t)(ptr - fname_start));
-                    ptr++;
-                    while (*ptr && (isspace((unsigned char)*ptr) || *ptr == ';')) ptr++;
+                    ptr++; /* closing quote */
+                    while (*ptr == ' ' || *ptr == '\t' || *ptr == ';') ptr++;
 
                     char *dot = strrchr(fname, '.');
                     if (dot && strcmp(dot, ".vtx") == 0) {
+                        /* Expand imported .vtx (it brings its own #line markers) */
                         char *imported = preprocess_file(fname);
                         if (imported) {
-                            size_t ilen = strlen(imported);
-                            result = realloc(result, result_len + ilen + 1);
-                            memcpy(result + result_len, imported, ilen);
-                            result_len += ilen;
-                            result[result_len] = '\0';
+                            pp_append_str(&result, &result_len, imported);
                             free(imported);
+                        }
+                        /* Consume the rest of the Import line (including its newline)
+                           so parent line numbers stay in sync. */
+                        while (*ptr && *ptr != '\n')
+                            ptr++;
+                        if (*ptr == '\n') {
+                            ptr++;
+                            src_line++;
+                        }
+                        /* Next content belongs to src_line */
+                        {
+                            char restore[1024];
+                            {
+                                char *esc = escape_for_line_directive(filename);
+                                char restore[2048];
+                                snprintf(restore, sizeof(restore),
+                                         "#line %d \"%s\"\n", src_line, esc ? esc : filename);
+                                pp_append_str(&result, &result_len, restore);
+                                free(esc);
+                            }
                         }
                         free(fname);
                         continue;
-                    } else {
-                        size_t line_len = (size_t)(ptr - start);
-                        result = realloc(result, result_len + line_len + 2);
-                        memcpy(result + result_len, start, line_len);
-                        result_len += line_len;
-                        result[result_len] = '\0';
-                        free(fname);
-                        continue;
                     }
+                    /* Quoted non-.vtx — keep as system-ish include line */
+                    {
+                        size_t line_len = (size_t)(ptr - start);
+                        pp_append(&result, &result_len, start, line_len);
+                    }
+                    free(fname);
+                    continue;
                 }
+                /* Malformed — fall through and copy one char */
+                ptr = start;
             } else if (*ptr == '<') {
-                while (*ptr && *ptr != '>') ptr++;
+                while (*ptr && *ptr != '>' && *ptr != '\n') ptr++;
                 if (*ptr == '>') ptr++;
-                while (*ptr && (isspace((unsigned char)*ptr) || *ptr == ';')) ptr++;
-                size_t line_len = (size_t)(ptr - start);
-                result = realloc(result, result_len + line_len + 2);
-                memcpy(result + result_len, start, line_len);
-                result_len += line_len;
-                result[result_len] = '\0';
+                while (*ptr == ' ' || *ptr == '\t' || *ptr == ';') ptr++;
+                {
+                    size_t line_len = (size_t)(ptr - start);
+                    pp_append(&result, &result_len, start, line_len);
+                }
                 continue;
             }
+            /* Not a real Import form — copy 'I' and continue */
+            ptr = start;
         }
-        if (*ptr) {
-            result = realloc(result, result_len + 2);
-            result[result_len++] = *ptr++;
-            result[result_len] = '\0';
-        }
+
+        /* Ordinary character */
+        pp_append_char(&result, &result_len, *ptr++);
     }
+
     free(data);
     if (!result) {
         result = malloc(1);
@@ -2626,10 +2864,13 @@ static char *preprocess_file(const char *filename) {
     return result;
 }
 
-/* ---------- Main ---------- */
+
+/* ================== Main ================== */
+
 int main(int argc, char **argv) {
     if (argc < 2) {
         fprintf(stderr, "Usage: vertexc <input.vtx>\n");
+        fprintf(stderr, "vertexc 1.2 (file/line tracking + heap fix)\n");
         return 1;
     }
 
@@ -2639,12 +2880,21 @@ int main(int argc, char **argv) {
     lex.src = preprocessed;
     lex.pos = 0;
     lex.line = 1;
+    lex.orig_line = 1;
+    lex.filename = strdup(argv[1]);
+    lex.filename_owned = 1;
 
     Parser p;
-    p.lex = lex;
-    p.current = get_token(&p.lex);
+    p.lex = &lex;
+    p.current = get_token(p.lex);
 
     ASTNode *ast = parse_program(&p);
+
+    if (error_count > 0) {
+        fprintf(stderr, "\n%d error(s) found. Compilation failed.\n", error_count);
+        free(preprocessed);
+        return 1;
+    }
 
     if (!ast) {
         fprintf(stderr, "Parsing failed.\n");
@@ -2653,6 +2903,9 @@ int main(int argc, char **argv) {
     }
 
     emit_cpp(ast, "output.cpp");
+
     free(preprocessed);
+    if (lex.filename_owned && lex.filename)
+        free(lex.filename);
     return 0;
 }
