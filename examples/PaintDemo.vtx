@@ -67,7 +67,7 @@ Enter PaintDemo;
 Run
   drawing <- 0;
   ink <- ColorRGB(20, 20, 20);
-  Window(480, 380, 120, 100);
+  Window(480, 440, 120, 100);
   SetWindowTitle("Vertex Paint Demo");
   SetFormColor(ColorRGB(255, 255, 255));
   hClear <- Button(MainWindow, 110, 28, 10, 10);

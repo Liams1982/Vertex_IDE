@@ -1,0 +1,131 @@
+{-----------------------------------------------------------------------------}
+{ Vertex OOP Demo – pointer objects (New / Dispose)                           }
+{ Works with current vertexc code generation                                  }
+{-----------------------------------------------------------------------------}
+
+Type
+  TCar = Class
+  Public
+    Make: String;
+    Model: String;
+    Year: Integer;
+    EngineRunning: Boolean;
+    HorsePower: Integer;
+    HasTurbo: Boolean;
+    Hybrid: Boolean;
+    Constructor Create(make: String; model: String; year: Integer);
+    Destructor Destroy;
+    Proc StartEngine;
+    Proc StopEngine;
+    Proc DisplayInfo;
+    Proc Drift;
+    Proc EcoMode;
+  End;
+
+Constructor TCar.Create(make: String; model: String; year: Integer);
+Run
+  Make <- make;
+  Model <- model;
+  Year <- year;
+  EngineRunning <- False;
+  HorsePower <- 0;
+  HasTurbo <- False;
+  Hybrid <- False;
+  Print("Created: ", make, " ", model, " (", year, ")");
+Stop;
+
+Destructor TCar.Destroy;
+Run
+  Print("Destroyed: ", Make, " ", Model);
+Stop;
+
+Proc TCar.StartEngine;
+Run
+  If EngineRunning = False Then
+  Run
+    EngineRunning <- True;
+    Print(Make, " ", Model, " engine started.");
+  Stop
+  Else
+    Print("Engine already running.");
+Stop;
+
+Proc TCar.StopEngine;
+Run
+  If EngineRunning = True Then
+  Run
+    EngineRunning <- False;
+    Print(Make, " ", Model, " engine stopped.");
+  Stop
+  Else
+    Print("Engine already off.");
+Stop;
+
+Proc TCar.DisplayInfo;
+Run
+  Print("Car: ", Make, " ", Model, ", Year: ", Year);
+  If EngineRunning Then
+    Print("  Engine: Running")
+  Else
+    Print("  Engine: Off");
+  If HorsePower > 0 Then
+    Print("  HP: ", HorsePower);
+  If HasTurbo Then
+    Print("  Turbo: Yes");
+  If Hybrid Then
+    Print("  Hybrid: Yes");
+Stop;
+
+Proc TCar.Drift;
+Run
+  Print(Make, " ", Model, " is drifting!");
+Stop;
+
+Proc TCar.EcoMode;
+Run
+  Print(Make, " ", Model, " eco mode on.");
+Stop;
+
+Enter CarsDemo;
+
+Var
+  Mustang: ^TCar;
+  Camry: ^TCar;
+  i: Integer;
+
+Run
+  Print("=== Vertex Car Demo ===");
+  Print("");
+
+  Mustang <- New(TCar, "Ford", "Mustang", 2023);
+  Mustang^.HorsePower <- 450;
+  Mustang^.HasTurbo <- True;
+
+  Camry <- New(TCar, "Toyota", "Camry", 2024);
+  Camry^.Hybrid <- True;
+
+  Print("");
+  Print("--- Info ---");
+  Mustang^.DisplayInfo;
+  Print("");
+  Camry^.DisplayInfo;
+
+  Print("");
+  Print("--- Mustang ---");
+  Mustang^.StartEngine;
+  Mustang^.Drift;
+  Mustang^.StopEngine;
+
+  Print("");
+  Print("--- Camry ---");
+  Camry^.StartEngine;
+  Camry^.EcoMode;
+  Camry^.StopEngine;
+
+  Print("");
+  Print("--- Cleanup ---");
+  Dispose(Mustang);
+  Dispose(Camry);
+  Print("Done.");
+Stop
+Exit.
