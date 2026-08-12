@@ -1,6 +1,6 @@
 {----------------------------------------------------------------------------}
-{ VCL - Vertex Component Library                                             }
-{ Controls + colors + canvas graphics + extra events                         }
+{ VCL - Vertex Component Library v1.5                                        }
+{ Controls + colors + canvas + events + timer + graphical SevenSeg LED + Timer            }
 {----------------------------------------------------------------------------}
 Import <windows.h>;
 Import <cstring>;
@@ -8,8 +8,8 @@ Import <cmath>;
 
 Type
   TNotifyEvent = Proc(hCtrl: HWND);
-  TMouseEvent  = Proc(hCtrl: HWND; x: Integer; y: Integer; button: Integer);
-  TKeyEvent    = Proc(hCtrl: HWND; key: Integer);
+  TMouseEvent = Proc(hCtrl: HWND; x: Integer; y: Integer; button: Integer);
+  TKeyEvent = Proc(hCtrl: HWND; key: Integer);
 
 Var
   MainWindow: HWND;
@@ -22,6 +22,7 @@ Var
   MouseUpHandler: TMouseEvent;
   MouseMoveHandler: TMouseEvent;
   KeyDownHandler: TKeyEvent;
+  TimerHandler: TNotifyEvent;
   FormColor: Integer;
   FormBrush: Integer;
   CtrlColorCount: Integer;
@@ -40,6 +41,13 @@ Var
   CanvasBrush: Integer;
   CanvasX: Integer;
   CanvasY: Integer;
+  SS_Count: Integer;
+  SS_H: Array[0..15] Of HWND;
+  SS_Value: Array[0..15] Of Integer;
+  SS_Digits: Array[0..15] Of Integer;
+  SS_On: Array[0..15] Of Integer;
+  SS_Off: Array[0..15] Of Integer;
+  SS_Bg: Array[0..15] Of Integer;
 
 Func Length(s: String): Integer;
 Var result: Integer;
@@ -433,6 +441,13 @@ Run
       KeyDownHandler(hWnd, key);
     result <- 0;
   Stop;
+  If (uMsg = WM_TIMER) And (handled = 0) Then
+  Run
+    If TimerHandler <> 0 Then
+      TimerHandler(hWnd);
+    handled <- 1;
+    result <- 0;
+  Stop;
   If handled = 0 Then
     result <- DefWindowProcA(hWnd, uMsg, wParam, lParam);
   WndProc <- result;
@@ -478,6 +493,8 @@ Run
   title <- "Vertex Application";
   Asm "MainWindow = CreateWindowExA(0, clsName.c_str(), title.c_str(), (DWORD)WS_OVERLAPPEDWINDOW, x, y, width, height, NULL, NULL, VCL_Instance, NULL);";
   NextControlID <- 1001;
+  TimerHandler <- 0;
+  SS_Count <- 0;
   CtrlColorCount <- 0;
   FormColor <- -1;
   FormBrush <- 0;
@@ -511,6 +528,7 @@ Run
   Stop;
 Stop;
 
+{---------------------- Standard Controls ----------------------}
 Func Button(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
 Var h: HWND; id: Integer; inst: HINSTANCE; cls: String; caption: String;
 Run
@@ -621,6 +639,172 @@ Run
   Panel <- h;
 Stop;
 
+{---------------------- Extra Controls ----------------------}
+Func StatusBar(parent: HWND; height: Integer): HWND;
+Var
+  h: HWND;
+  id: Integer;
+  w: Integer;
+  hh: Integer;
+Run
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  w <- 400; hh <- height;
+  If height < 18 Then hh <- 22;
+  Asm "{ RECT r; GetClientRect(parent, &r); w = r.right - r.left; }";
+  Asm "{ HWND ph = parent; int y = 0; RECT r; GetClientRect(ph, &r); y = r.bottom - hh; h = CreateWindowExA(0, \"STATIC\", \"Ready\", (DWORD)(WS_CHILD | WS_VISIBLE | SS_LEFT), 0, y, w, hh, ph, (HMENU)(UINT_PTR)(unsigned)id, GetModuleHandleA(NULL), NULL); }";
+  StatusBar <- h;
+Stop;
+
+Func HyperTerm(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
+Var
+  h: HWND;
+  id: Integer;
+Run
+  id <- NextControlID; NextControlID <- NextControlID + 1;
+  Asm "{ h = CreateWindowExA((DWORD)WS_EX_CLIENTEDGE, \"EDIT\", \"\", (DWORD)(WS_CHILD | WS_VISIBLE | WS_VSCROLL | WS_HSCROLL | ES_MULTILINE | ES_AUTOVSCROLL | ES_AUTOHSCROLL | ES_READONLY | WS_TABSTOP), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, GetModuleHandleA(NULL), NULL); }";
+  HyperTerm <- h;
+Stop;
+
+Proc TermWrite(hCtrl: HWND; text: String);
+Run
+  If hCtrl <> 0 Then
+  Run
+    Asm "{ int len = GetWindowTextLengthA(hCtrl); SendMessageA(hCtrl, EM_SETSEL, (WPARAM)len, (LPARAM)len); }";
+    Asm "SendMessageA(hCtrl, EM_REPLACESEL, FALSE, (LPARAM)text.c_str());";
+    Asm "{ int len2 = GetWindowTextLengthA(hCtrl); SendMessageA(hCtrl, EM_SETSEL, (WPARAM)len2, (LPARAM)len2); SendMessageA(hCtrl, EM_SCROLLCARET, 0, 0); }";
+  Stop;
+Stop;
+
+Proc TermClear(hCtrl: HWND);
+Run
+  If hCtrl <> 0 Then
+    Asm "SetWindowTextA(hCtrl, \"\");";
+Stop;
+
+{---------------------- Seven-segment LED (graphical, subclassed) ----------------------}
+Proc _SS_InstallSubclass(h: HWND);
+Run
+  Asm "{ static WNDPROC s_old = NULL; static int s_ready = 0; struct X { static void fillHex(HDC hdc, POINT* pts, int n, COLORREF col) { HBRUSH b = CreateSolidBrush(col); HPEN p = CreatePen(PS_SOLID, 1, col); HGDIOBJ ob = SelectObject(hdc, b); HGDIOBJ op = SelectObject(hdc, p); Polygon(hdc, pts, n); SelectObject(hdc, ob); SelectObject(hdc, op); DeleteObject(b); DeleteObject(p); } static void drawSegH(HDC hdc, int x1, int y, int x2, int t, COLORREF col) { int d = t/2; if (d < 1) d = 1; POINT pts[6] = { {x1+d,y}, {x2-d,y}, {x2,y+d}, {x2-d,y+t}, {x1+d,y+t}, {x1,y+d} }; fillHex(hdc, pts, 6, col); } static void drawSegV(HDC hdc, int x, int y1, int y2, int t, COLORREF col) { int d = t/2; if (d < 1) d = 1; POINT pts[6] = { {x+d,y1}, {x+t,y1+d}, {x+t,y2-d}, {x+d,y2}, {x,y2-d}, {x,y1+d} }; fillHex(hdc, pts, 6, col); } static LRESULT CALLBACK P(HWND h, UINT msg, WPARAM wp, LPARAM lp) { if (msg == WM_PAINT || msg == WM_PRINTCLIENT) { PAINTSTRUCT ps; HDC hdc = BeginPaint(h, &ps); RECT rc; GetClientRect(h, &rc); int found = -1; for (int i = 0; i < SS_Count; i++) if ((HWND)(UINT_PTR)SS_H[i] == h) { found = i; break; } if (found < 0) { EndPaint(h, &ps); return 0; } int val = SS_Value[found]; int digits = SS_Digits[found]; if (digits < 1) digits = 1; if (digits > 6) digits = 6; COLORREF onC = (COLORREF)SS_On[found]; COLORREF offC = (COLORREF)SS_Off[found]; COLORREF bgC = (COLORREF)SS_Bg[found]; HBRUSH bgb = CreateSolidBrush(bgC); FillRect(hdc, &rc, bgb); DeleteObject(bgb); int cw = rc.right, ch = rc.bottom; int digH = ch - 8; if (digH < 20) digH = 20; int digW = digH * 55 / 100; int gap = digW / 5; if (gap < 3) gap = 3; int totalW = digits * digW + (digits - 1) * gap; int x0 = (cw - totalW) / 2; if (x0 < 4) x0 = 4; int t = digH / 9; if (t < 3) t = 3; if (t > 12) t = 12; int remaining = val; for (int di = digits - 1; di >= 0; di--) { int dgt = remaining % 10; remaining /= 10; int mask = 0; if (dgt==0) mask=0x3F; else if (dgt==1) mask=0x06; else if (dgt==2) mask=0x5B; else if (dgt==3) mask=0x4F; else if (dgt==4) mask=0x66; else if (dgt==5) mask=0x6D; else if (dgt==6) mask=0x7D; else if (dgt==7) mask=0x07; else if (dgt==8) mask=0x7F; else if (dgt==9) mask=0x6F; int dx = x0 + di * (digW + gap); int dy = 4; int mid = dy + digH/2; int xR = dx + digW - t; int yB = dy + digH - t; drawSegH(hdc, dx+t, dy, dx+digW-t, t, (mask&1)?onC:offC); drawSegV(hdc, xR, dy+t, mid, t, (mask&2)?onC:offC); drawSegV(hdc, xR, mid, yB, t, (mask&4)?onC:offC); drawSegH(hdc, dx+t, yB, dx+digW-t, t, (mask&8)?onC:offC); drawSegV(hdc, dx, mid, yB, t, (mask&16)?onC:offC); drawSegV(hdc, dx, dy+t, mid, t, (mask&32)?onC:offC); drawSegH(hdc, dx+t, mid-t/2, dx+digW-t, t, (mask&64)?onC:offC); } EndPaint(h, &ps); return 0; } if (msg == WM_ERASEBKGND) return 1; return CallWindowProcA(s_old, h, msg, wp, lp); } }; if (!s_ready) { s_old = (WNDPROC)GetWindowLongPtrA(h, GWLP_WNDPROC); s_ready = 1; } SetWindowLongPtrA(h, GWLP_WNDPROC, (LONG_PTR)&X::P); }";
+Stop;
+
+Func SevenSeg(parent: HWND; width: Integer; height: Integer; x: Integer; y: Integer): HWND;
+Var
+  h: HWND;
+  id: Integer;
+  idx: Integer;
+Run
+  If parent = 0 Then parent <- MainWindow;
+  id <- NextControlID;
+  NextControlID <- NextControlID + 1;
+  Asm "{ h = CreateWindowExA(0, \"STATIC\", \"\", (DWORD)(WS_CHILD | WS_VISIBLE), x, y, width, height, parent, (HMENU)(UINT_PTR)(unsigned)id, GetModuleHandleA(NULL), NULL); }";
+  If SS_Count < 16 Then
+  Run
+    idx <- SS_Count;
+    SS_Count <- SS_Count + 1;
+    SS_H[idx] <- h;
+    SS_Value[idx] <- 0;
+    SS_Digits[idx] <- 1;
+    SS_On[idx] <- ColorRGB(255, 40, 40);
+    SS_Off[idx] <- ColorRGB(50, 12, 12);
+    SS_Bg[idx] <- ColorRGB(15, 8, 8);
+  Stop;
+  _SS_InstallSubclass(h);
+  Asm "InvalidateRect(h, NULL, TRUE); UpdateWindow(h);";
+  SevenSeg <- h;
+Stop;
+
+Proc SetSevenSeg(hCtrl: HWND; value: Integer);
+Var idx: Integer; digits: Integer; v: Integer;
+Run
+  If hCtrl <> 0 Then
+  Run
+    idx <- 0;
+    While idx < SS_Count Do
+    Run
+      If SS_H[idx] = hCtrl Then
+      Run
+        If value < 0 Then value <- 0;
+        SS_Value[idx] <- value;
+        digits <- 1;
+        v <- value;
+        While v >= 10 Do
+        Run
+          digits <- digits + 1;
+          v <- v Div 10;
+        Stop;
+        If digits > 6 Then digits <- 6;
+        If SS_Digits[idx] < digits Then SS_Digits[idx] <- digits;
+        Asm "InvalidateRect(hCtrl, NULL, TRUE); UpdateWindow(hCtrl);";
+      Stop;
+      idx <- idx + 1;
+    Stop;
+  Stop;
+Stop;
+
+Proc SetSevenSegDigits(hCtrl: HWND; value: Integer; numDigits: Integer);
+Var idx: Integer;
+Run
+  If hCtrl <> 0 Then
+  Run
+    idx <- 0;
+    While idx < SS_Count Do
+    Run
+      If SS_H[idx] = hCtrl Then
+      Run
+        If value < 0 Then value <- 0;
+        If numDigits < 1 Then numDigits <- 1;
+        If numDigits > 6 Then numDigits <- 6;
+        SS_Value[idx] <- value;
+        SS_Digits[idx] <- numDigits;
+        Asm "InvalidateRect(hCtrl, NULL, TRUE); UpdateWindow(hCtrl);";
+      Stop;
+      idx <- idx + 1;
+    Stop;
+  Stop;
+Stop;
+
+Proc SetSevenSegColor(hCtrl: HWND; onColor: Integer; offColor: Integer; bgColor: Integer);
+Var idx: Integer;
+Run
+  If hCtrl <> 0 Then
+  Run
+    idx <- 0;
+    While idx < SS_Count Do
+    Run
+      If SS_H[idx] = hCtrl Then
+      Run
+        SS_On[idx] <- onColor;
+        SS_Off[idx] <- offColor;
+        SS_Bg[idx] <- bgColor;
+        Asm "InvalidateRect(hCtrl, NULL, TRUE); UpdateWindow(hCtrl);";
+      Stop;
+      idx <- idx + 1;
+    Stop;
+  Stop;
+Stop;
+
+{---------------------- Timer API ----------------------}
+Proc OnTimer(handler: TNotifyEvent);
+Run
+  TimerHandler <- handler;
+Stop;
+
+Proc StartTimer(intervalMs: Integer);
+Run
+  If MainWindow <> 0 Then
+  Run
+    If intervalMs < 1 Then intervalMs <- 1;
+    Asm "SetTimer(MainWindow, 1, (UINT)intervalMs, NULL);";
+  Stop;
+Stop;
+
+Proc StopTimer;
+Run
+  If MainWindow <> 0 Then
+    Asm "KillTimer(MainWindow, 1);";
+Stop;
+
+{---------------------- Control Manipulation ----------------------}
 Proc SetText(hCtrl: HWND; text: String);
 Run
   If hCtrl <> 0 Then SetWindowTextA(hCtrl, text);
@@ -674,6 +858,7 @@ Run
   MessageBoxA(MainWindow, text, title, MB_OK Or MB_ICONINFORMATION);
 Stop;
 
+{---------------------- Event Handlers ----------------------}
 Proc OnClick(handler: TNotifyEvent);
 Run
   ClickHandler <- handler;
@@ -704,6 +889,7 @@ Run
   KeyDownHandler <- handler;
 Stop;
 
+{---------------------- CheckBox / Radio helpers ----------------------}
 Proc SetChecked(hCtrl: HWND; checked: Integer);
 Run
   If hCtrl <> 0 Then
@@ -724,6 +910,7 @@ Run
   GetChecked <- result;
 Stop;
 
+{---------------------- ListBox / ComboBox helpers ----------------------}
 Proc AddItem(hCtrl: HWND; text: String);
 Run
   If hCtrl <> 0 Then
@@ -760,6 +947,7 @@ Run
     Asm "SendMessageA(hCtrl, LB_SETCURSEL, (WPARAM)index, 0); SendMessageA(hCtrl, CB_SETCURSEL, (WPARAM)index, 0);";
 Stop;
 
+{---------------------- ComPort serial ----------------------}
 Func ComOpen(port: String; baud: Integer): Integer;
 Var h: Integer; ok: Integer;
 Run
@@ -801,6 +989,7 @@ Run
   ComBytesAvailable <- result;
 Stop;
 
+{---------------------- Color APIs ----------------------}
 Proc SetFormColor(color: Integer);
 Run
   FormColor <- color;

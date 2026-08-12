@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
-# vertex_ide.py - Vertex IDE (Delphi-style form designer)
+# vertex_ide.py - Vertex IDE v1.2 (Delphi-style form designer)
+# Scrollable palette + realistic SevenSeg designer preview + SetSevenSegDigits/Color
 # Uses external VCL file (vcl.vtx) via Import.
 
 import os
@@ -11,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 APP_NAME = "Vertex IDE"
-APP_VERSION = "1.0"
+APP_VERSION = "1.2"
 
 CONFIG_FILE = "vertex_ide.json"
 DEFAULT_CONFIG = {
@@ -74,15 +75,26 @@ class ToolTip:
     def show_tip(self, event=None):
         if self.tip_window or not self.text:
             return
-        x, y, _, _ = self.widget.bbox("insert")
-        x += self.widget.winfo_rootx() + 25
-        y += self.widget.winfo_rooty() + 25
+        try:
+            bbox = None
+            try:
+                bbox = self.widget.bbox("insert")
+            except Exception:
+                bbox = None
+            if bbox:
+                x, y = bbox[0], bbox[1]
+            else:
+                x, y = 0, self.widget.winfo_height()
+        except Exception:
+            x, y = 0, 20
+        x = self.widget.winfo_rootx() + x + 16
+        y = self.widget.winfo_rooty() + y + 8
         self.tip_window = tw = tk.Toplevel(self.widget)
         tw.wm_overrideredirect(True)
         tw.wm_geometry(f"+{x}+{y}")
         label = tk.Label(tw, text=self.text, justify=tk.LEFT,
                          background="#ffffe0", relief=tk.SOLID, borderwidth=1,
-                         font=("Segoe UI", "8"))
+                         font=("Segoe UI", "8"), padx=6, pady=3)
         label.pack()
 
     def hide_tip(self):
@@ -127,9 +139,22 @@ COMPLETIONS = sorted(set(list(KEYWORDS) + list(TYPES) + [
     "ComOpen", "ComClose", "ComWrite", "ComRead", "ComBytesAvailable",
     "MainWindow", "IntToStr", "StrToInt", "FloatToStr", "StrToFloat",
     "Length", "True", "False", "Integer", "Real", "Boolean", "String",
+    "StartEngine", "StopEngine", "DisplayInfo", "Drift", "EcoMode",
+    "Inherited", "Self", "Create", "Destroy",
+    "StatusBar", "HyperTerm", "SevenSeg", "TermWrite", "TermClear",
+    "SetSevenSeg", "SetSevenSegDigits", "SetSevenSegColor", "StartTimer", "StopTimer", "OnTimer",
 ]))
 
-# Palette: (type_id, label, default_w, default_h, default_caption, icon)
+MEMBER_COMPLETIONS = sorted({
+    "StartEngine", "StopEngine", "DisplayInfo", "IsEngineRunning",
+    "ToggleTurbo", "ToggleHybrid", "Drift", "EcoMode",
+    "Create", "Destroy",
+    "Make", "Model", "Year", "EngineRunning", "HorsePower", "HasTurbo", "Hybrid",
+    "FMake", "FModel", "FYear", "FEngineRunning", "FHasTurbo", "FHybrid",
+    "FHorsePower", "FSafetyPackage",
+})
+
+# Palette (type_id, label, default_w, default_h, default_caption, icon)
 PALETTE = [
     ("select", "Select", 0, 0, "", "↖"),
     ("button", "Button", 100, 32, "Button", "🔘"),
@@ -143,7 +168,82 @@ PALETTE = [
     ("groupbox", "GroupBox", 200, 120, "Group", "📦"),
     ("panel", "Panel", 200, 100, "", "▭"),
     ("comport", "ComPort", 100, 28, "COM1", "🔌"),
+    ("statusbar", "StatusBar", 200, 24, "Ready", "📶"),
+    ("hyperterm", "HyperTerm", 280, 140, "", "💻"),
+    ("timer", "Timer", 90, 28, "1000ms", "⏱"),
+    ("sevenseg", "SevenSeg", 140, 64, "0", "🔢"),
 ]
+
+# Per-control property & event catalog (for Events tab)
+COMPONENT_INFO = {
+    "button": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height", "Color"],
+        "events": ["OnClick"],
+    },
+    "edit": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height", "Color"],
+        "events": ["OnChange", "OnKeyDown"],
+    },
+    "label": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height", "Color"],
+        "events": [],
+    },
+    "memo": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height", "Color"],
+        "events": ["OnChange", "OnKeyDown"],
+    },
+    "checkbox": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height"],
+        "events": ["OnClick"],
+    },
+    "radio": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height"],
+        "events": ["OnClick"],
+    },
+    "listbox": {
+        "props": ["Name", "Left", "Top", "Width", "Height"],
+        "events": ["OnClick"],
+    },
+    "combo": {
+        "props": ["Name", "Left", "Top", "Width", "Height"],
+        "events": ["OnChange"],
+    },
+    "groupbox": {
+        "props": ["Name", "Caption", "Left", "Top", "Width", "Height"],
+        "events": [],
+    },
+    "panel": {
+        "props": ["Name", "Left", "Top", "Width", "Height", "Color"],
+        "events": ["OnMouseDown", "OnMouseUp", "OnMouseMove"],
+    },
+    "comport": {
+        "props": ["Name", "Caption (PORT@baud)", "Left", "Top", "Width", "Height"],
+        "events": [],
+    },
+    "statusbar": {
+        "props": ["Name", "Caption", "Height"],
+        "events": [],
+    },
+    "hyperterm": {
+        "props": ["Name", "Left", "Top", "Width", "Height"],
+        "events": [],
+        "notes": "TermWrite / TermClear",
+    },
+    "timer": {
+        "props": ["Name", "Interval (ms) via Caption"],
+        "events": ["OnTimer"],
+        "notes": "StartTimer / StopTimer",
+    },
+    "sevenseg": {
+        "props": ["Name", "Caption (value)", "Left", "Top", "Width", "Height", "Color"],
+        "events": [],
+        "notes": "SetSevenSeg(h, value)",
+    },
+    "form": {
+        "props": ["Title", "Width", "Height", "Color"],
+        "events": ["OnMouseDown", "OnMouseUp", "OnMouseMove", "OnKeyDown", "OnTimer"],
+    },
+}
 
 # Named colors for the property dropdown (label, designer hex, (r,g,b))
 COLOR_CHOICES = [
@@ -285,58 +385,70 @@ def color_hex_from_rgb(r: int, g: int, b: int) -> str:
 
 THEMES = {
     "dark": {
-        "bg": "#1e1e1e", "fg": "#d4d4d4", "insertbg": "#ffffff",
-        "select_bg": "#264f78", "toolbar_bg": "#2d2d30", "toolbar_fg": "#cccccc",
-        "btn_bg": "#3e3e42", "btn_fg": "#ffffff", "btn_active": "#505054",
-        "status_bg": "#007acc", "status_fg": "#ffffff",
-        "output_bg": "#1e1e1e", "output_fg": "#d4d4d4",
-        "line_bg": "#252526", "line_fg": "#858585",
-        "splash_bg": "#1e1e1e", "splash_fg": "#569cd6",
-        "success": "#4ec9b0", "error": "#f44747",
-        "palette_bg": "#2d2d30",
-        "form_bg": "#dcdcdc",
-        "form_border": "#6a6a6a",
-        "prop_bg": "#2d2d30",
-        "keyword": {"fg": "#569cd6", "bold": True},
-        "flow": {"fg": "#ffffff", "bold": True},
-        "type": {"fg": "#4ec9b0", "bold": False},
-        "string": {"fg": "#ce9178"},
-        "comment": {"fg": "#6a9955", "italic": True},
-        "commentline": {"fg": "#6a9955", "italic": True},
-        "number": {"fg": "#b5cea8"},
+        "bg": "#1e1e2e",
+        "ac_bg": "#313244", "ac_fg": "#cdd6f4", "ac_sel": "#89b4fa",
+        "ac_border": "#89b4fa", "accent": "#89b4fa", "accent2": "#a6e3a1",
+        "fg": "#cdd6f4", "insertbg": "#f5e0dc",
+        "select_bg": "#45475a", "toolbar_bg": "#181825", "toolbar_fg": "#bac2de",
+        "btn_bg": "#313244", "btn_fg": "#cdd6f4", "btn_active": "#45475a",
+        "btn_hover": "#585b70", "btn_hover_fg": "#ffffff",
+        "status_bg": "#89b4fa", "status_fg": "#1e1e2e",
+        "output_bg": "#11111b", "output_fg": "#a6adc8",
+        "line_bg": "#181825", "line_fg": "#6c7086",
+        "splash_bg": "#1e1e2e", "splash_fg": "#89b4fa",
+        "success": "#a6e3a1", "error": "#f38ba8",
+        "palette_bg": "#181825",
+        "form_bg": "#dce0e8",
+        "form_border": "#7f849c",
+        "prop_bg": "#1e1e2e",
+        "keyword": {"fg": "#89b4fa", "bold": True},
+        "flow": {"fg": "#f5c2e7", "bold": True},
+        "type": {"fg": "#94e2d5", "bold": False},
+        "string": {"fg": "#a6e3a1"},
+        "comment": {"fg": "#6c7086", "italic": True},
+        "commentline": {"fg": "#6c7086", "italic": True},
+        "number": {"fg": "#fab387"},
     },
     "light": {
-        "bg": "#ffffff", "fg": "#1e1e1e", "insertbg": "#000000",
-        "select_bg": "#add6ff", "toolbar_bg": "#f3f3f3", "toolbar_fg": "#333333",
-        "btn_bg": "#d0d0d0", "btn_fg": "#1e1e1e", "btn_active": "#b0b0b0",
-        "status_bg": "#0078d4", "status_fg": "#ffffff",
-        "output_bg": "#f8f8f8", "output_fg": "#1e1e1e",
-        "line_bg": "#f0f0f0", "line_fg": "#6e6e6e",
-        "splash_bg": "#ffffff", "splash_fg": "#0078d4",
-        "success": "#107c10", "error": "#d13438",
-        "palette_bg": "#e8e8e8",
-        "form_bg": "#dcdcdc",
-        "form_border": "#808080",
-        "prop_bg": "#f5f5f5",
-        "keyword": {"fg": "#0000ff", "bold": True},
-        "flow": {"fg": "#000000", "bold": True},
-        "type": {"fg": "#2b91af", "bold": False},
-        "string": {"fg": "#a31515"},
-        "comment": {"fg": "#008000", "italic": True},
-        "commentline": {"fg": "#008000", "italic": True},
-        "number": {"fg": "#098658"},
+        "bg": "#fafbff",
+        "ac_bg": "#ffffff", "ac_fg": "#1a1a2e", "ac_sel": "#3b82f6",
+        "ac_border": "#3b82f6", "accent": "#2563eb", "accent2": "#059669",
+        "fg": "#1e293b", "insertbg": "#0f172a",
+        "select_bg": "#bfdbfe", "toolbar_bg": "#eff6ff", "toolbar_fg": "#1e3a5f",
+        "btn_bg": "#dbeafe", "btn_fg": "#1e3a8a", "btn_active": "#93c5fd",
+        "btn_hover": "#60a5fa", "btn_hover_fg": "#ffffff",
+        "status_bg": "#2563eb", "status_fg": "#ffffff",
+        "output_bg": "#f8fafc", "output_fg": "#334155",
+        "line_bg": "#e0e7ff", "line_fg": "#64748b",
+        "splash_bg": "#eff6ff", "splash_fg": "#2563eb",
+        "success": "#059669", "error": "#dc2626",
+        "palette_bg": "#f0f9ff",
+        "form_bg": "#f1f5f9",
+        "form_border": "#94a3b8",
+        "prop_bg": "#f8fafc",
+        "keyword": {"fg": "#2563eb", "bold": True},
+        "flow": {"fg": "#7c3aed", "bold": True},
+        "type": {"fg": "#0d9488", "bold": False},
+        "string": {"fg": "#b45309"},
+        "comment": {"fg": "#16a34a", "italic": True},
+        "commentline": {"fg": "#16a34a", "italic": True},
+        "number": {"fg": "#db2777"},
     },
     "monokai": {
-        "bg": "#272822", "fg": "#f8f8f2", "insertbg": "#ffffff",
-        "select_bg": "#49483e", "toolbar_bg": "#3e3d32", "toolbar_fg": "#f8f8f2",
+        "bg": "#272822",
+        "ac_bg": "#3e3d32", "ac_fg": "#f8f8f2", "ac_sel": "#f92672",
+        "ac_border": "#a6e22e", "accent": "#a6e22e", "accent2": "#66d9ef",
+        "fg": "#f8f8f2", "insertbg": "#ffffff",
+        "select_bg": "#49483e", "toolbar_bg": "#1d1e19", "toolbar_fg": "#f8f8f2",
         "btn_bg": "#3e3d32", "btn_fg": "#f8f8f2", "btn_active": "#5e5d52",
+        "btn_hover": "#75715e", "btn_hover_fg": "#ffffff",
         "status_bg": "#a6e22e", "status_fg": "#272822",
-        "output_bg": "#272822", "output_fg": "#f8f8f2",
+        "output_bg": "#1d1e19", "output_fg": "#f8f8f2",
         "line_bg": "#3e3d32", "line_fg": "#75715e",
         "splash_bg": "#272822", "splash_fg": "#a6e22e",
         "success": "#a6e22e", "error": "#f92672",
         "palette_bg": "#3e3d32",
-        "form_bg": "#dcdcdc",
+        "form_bg": "#e6e6e6",
         "form_border": "#75715e",
         "prop_bg": "#3e3d32",
         "keyword": {"fg": "#f92672", "bold": True},
@@ -348,6 +460,46 @@ THEMES = {
         "number": {"fg": "#ae81ff"},
     },
 }
+
+
+def bind_button_hover(btn, theme):
+    """Subtle color shift on mouse enter/leave for flat buttons."""
+    normal_bg = theme.get("btn_bg", "#3e3e42")
+    normal_fg = theme.get("btn_fg", "#ffffff")
+    hover_bg = theme.get("btn_hover", theme.get("btn_active", "#505054"))
+    hover_fg = theme.get("btn_hover_fg", normal_fg)
+    active_bg = theme.get("btn_active", hover_bg)
+
+    def on_enter(e, b=btn, hb=hover_bg, hf=hover_fg):
+        try:
+            if str(b.cget("state")) == "disabled":
+                return
+            b.configure(bg=hb, fg=hf)
+        except Exception:
+            pass
+
+    def on_leave(e, b=btn, nb=normal_bg, nf=normal_fg):
+        try:
+            b.configure(bg=nb, fg=nf)
+        except Exception:
+            pass
+
+    def on_press(e, b=btn, ab=active_bg):
+        try:
+            b.configure(bg=ab)
+        except Exception:
+            pass
+
+    def on_release(e, b=btn, hb=hover_bg, hf=hover_fg):
+        try:
+            b.configure(bg=hb, fg=hf)
+        except Exception:
+            pass
+
+    btn.bind("<Enter>", on_enter)
+    btn.bind("<Leave>", on_leave)
+    btn.bind("<ButtonPress-1>", on_press)
+    btn.bind("<ButtonRelease-1>", on_release)
 
 # ---------- Helpers ----------
 def highlight(text_widget):
@@ -583,6 +735,12 @@ class VertexIDE:
         self.current_file = None
         self._last_exe_path = None
         self._highlight_job = None
+        self._undo_stack = []          # list of full text snapshots (max 10)
+        self._redo_stack = []
+        self._undo_max = 10
+        self._dirty = False
+        self._last_snapshot = None     # text before last key change
+        self._suspend_undo = False     # skip push during undo/redo apply
         self.toolbar_buttons = []
         self.design_controls = []
         self.selected_control = None
@@ -598,7 +756,8 @@ class VertexIDE:
         self.handle_size = 6
         self.show_grid = True
         self.grid_size = 5
-        self._updating_form_size = False   # recursion guard
+        self._updating_form_size = False
+        self._explorer_update_id = None
 
         try:
             from PIL import Image, ImageTk
@@ -643,6 +802,8 @@ class VertexIDE:
         menubar = tk.Menu(self.root, tearoff=0, bg=theme["toolbar_bg"],
                           fg=theme["toolbar_fg"], activebackground=theme["btn_active"])
         self.root.config(menu=menubar)
+
+        # ---------- File menu ----------
         file_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
         file_menu.add_command(label="New", command=self.new_file, accelerator="Ctrl+N")
         file_menu.add_command(label="Open…", command=self.open_file, accelerator="Ctrl+O")
@@ -654,6 +815,19 @@ class VertexIDE:
         file_menu.add_command(label="Exit", command=self.root.quit)
         menubar.add_cascade(label="File", menu=file_menu)
 
+        # ---------- Edit menu ----------
+        edit_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
+        edit_menu.add_command(label="Undo", command=self.undo, accelerator="Ctrl+Z")
+        edit_menu.add_command(label="Redo", command=self.redo, accelerator="Ctrl+Y")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Cut", command=self.cut, accelerator="Ctrl+X")
+        edit_menu.add_command(label="Copy", command=self.copy, accelerator="Ctrl+C")
+        edit_menu.add_command(label="Paste", command=self.paste, accelerator="Ctrl+V")
+        edit_menu.add_separator()
+        edit_menu.add_command(label="Select All", command=self.select_all, accelerator="Ctrl+A")
+        menubar.add_cascade(label="Edit", menu=edit_menu)
+
+        # ---------- Form menu ----------
         form_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
         form_menu.add_command(label="New Form", command=self.new_form)
         form_menu.add_command(label="Generate VCL Code", command=lambda: self.generate_vcl_code(switch_to_code=True))
@@ -661,6 +835,7 @@ class VertexIDE:
         form_menu.add_command(label="Sync from Code", command=self.sync_from_code)
         menubar.add_cascade(label="Form", menu=form_menu)
 
+        # ---------- View menu ----------
         view_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
         self.theme_var = tk.StringVar(value=self.current_theme)
         for name in THEMES:
@@ -668,11 +843,30 @@ class VertexIDE:
                                       value=name, command=lambda t=name: self.switch_theme(t))
         menubar.add_cascade(label="View", menu=view_menu)
 
+        # ---------- Help menu ----------
         help_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
         help_menu.add_command(label="Documentation…", command=self.open_documentation)
+        help_menu.add_command(label="Shortcuts", command=self.show_shortcuts)
         help_menu.add_separator()
         help_menu.add_command(label="About", command=self.about)
         menubar.add_cascade(label="Help", menu=help_menu)
+
+        # Bind global shortcuts
+        self.root.bind("<Control-z>", lambda e: self.undo())
+        self.root.bind("<Control-Z>", lambda e: self.undo())
+        self.root.bind("<Control-y>", lambda e: self.redo())
+        self.root.bind("<Control-Y>", lambda e: self.redo())
+        self.root.bind("<Control-x>", lambda e: self.cut())
+        self.root.bind("<Control-X>", lambda e: self.cut())
+        self.root.bind("<Control-c>", lambda e: self.copy())
+        self.root.bind("<Control-C>", lambda e: self.copy())
+        self.root.bind("<Control-v>", lambda e: self.paste())
+        self.root.bind("<Control-V>", lambda e: self.paste())
+        self.root.bind("<Control-a>", lambda e: self.select_all())
+        self.root.bind("<Control-A>", lambda e: self.select_all())
+
+        # <-- CHANGED: Register window close handler for save-on-close
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Toolbar
         self.toolbar = tk.Frame(self.root, height=44, bg=theme["toolbar_bg"])
@@ -749,15 +943,32 @@ class VertexIDE:
             state="disabled", font=("Consolas", 12), yscrollcommand=self._on_line_scroll)
         self.line_numbers.pack(side=tk.LEFT, fill=tk.Y)
         self.editor = tk.Text(
-            editor_frame, undo=True, font=("Consolas", 12), relief=tk.FLAT, bd=0,
+            editor_frame, undo=False, font=("Consolas", 12), relief=tk.FLAT, bd=0,
             padx=12, pady=8, wrap=tk.NONE, background=theme["bg"], foreground=theme["fg"],
             insertbackground=theme["insertbg"], selectbackground=theme["select_bg"],
-            yscrollcommand=self._on_editor_scroll, exportselection=False)
+            yscrollcommand=self._on_editor_scroll, exportselection=False,
+            maxundo=10)                                                              # <-- CHANGED
         self.editor.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         self.vscroll.config(command=self._on_scrollbar)
         self._configure_tags(theme)
 
+        self.editor.bind("<KeyPress>", self._on_key_press)
         self.editor.bind("<KeyRelease>", self._on_key_release)
+
+        def _accel_undo(event=None):
+            self.undo()
+            return "break"
+        def _accel_redo(event=None):
+            self.redo()
+            return "break"
+        self.editor.bind("<Control-z>", _accel_undo)
+        self.editor.bind("<Control-Z>", _accel_undo)
+        self.editor.bind("<Control-y>", _accel_redo)
+        self.editor.bind("<Control-Y>", _accel_redo)
+        # Windows sometimes uses Control-Shift-Z for redo
+        self.editor.bind("<Control-Shift-Z>", _accel_redo)
+        self.editor.bind("<Control-Shift-z>", _accel_redo)
+
         self.editor.bind("<ButtonRelease-1>", self._on_cursor_move)
         self.editor.bind("<MouseWheel>", self._on_mousewheel)
         self.editor.bind("<Button-4>", self._on_mousewheel)
@@ -804,15 +1015,16 @@ class VertexIDE:
         h_entry.bind("<FocusOut>", lambda e: self._apply_form_size())
 
         # Apply button (kept for convenience)
-        tk.Button(design_top, text="✓ Apply", command=self._apply_form_size,
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT, padx=8).pack(side=tk.LEFT, padx=6)
-
-        # Grid & Sync
-        tk.Button(design_top, text="▦ Grid", command=self.toggle_grid,
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT, padx=8).pack(side=tk.LEFT, padx=6)
-        tk.Button(design_top, text="↻ Sync", command=self.sync_from_code,
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT, padx=8).pack(side=tk.LEFT, padx=6)
-        ToolTip(design_top.winfo_children()[-1], "Sync form from code")
+        for _txt, _cmd, _tip in (
+            ("✓ Apply", self._apply_form_size, "Apply form size/title"),
+            ("▦ Grid", self.toggle_grid, "Toggle designer grid"),
+            ("↻ Sync", self.sync_from_code, "Sync form from code"),
+        ):
+            _b = tk.Button(design_top, text=_txt, command=_cmd,
+                           bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT, padx=8)
+            _b.pack(side=tk.LEFT, padx=6)
+            bind_button_hover(_b, theme)
+            ToolTip(_b, _tip)
 
         canvas_holder = tk.Frame(design_tab, bg="#808080")
         canvas_holder.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
@@ -833,34 +1045,80 @@ class VertexIDE:
                                      bg=theme["toolbar_bg"], sashrelief=tk.FLAT)
         right_split.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
 
-        # Palette
+        # Palette (scrollable)
         self.palette = tk.Frame(right_split, bg=theme["palette_bg"])
         right_split.add(self.palette, minsize=160)
         tk.Label(self.palette, text="  Standard", bg=theme["palette_bg"], fg=theme["splash_fg"],
-                 font=("Segoe UI", 10, "bold")).pack(pady=(10, 6), padx=8, anchor=tk.W)
+                 font=("Segoe UI", 10, "bold")).pack(pady=(10, 4), padx=8, anchor=tk.W)
 
-        grid_frame = tk.Frame(self.palette, bg=theme["palette_bg"])
+        pal_scroll_host = tk.Frame(self.palette, bg=theme["palette_bg"])
+        pal_scroll_host.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+
+        self.palette_vscroll = tk.Scrollbar(pal_scroll_host, orient=tk.VERTICAL)
+        self.palette_vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.palette_canvas = tk.Canvas(
+            pal_scroll_host, bg=theme["palette_bg"], highlightthickness=0,
+            yscrollcommand=self.palette_vscroll.set)
+        self.palette_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.palette_vscroll.config(command=self.palette_canvas.yview)
+
+        self.palette_inner = tk.Frame(self.palette_canvas, bg=theme["palette_bg"])
+        self._palette_win = self.palette_canvas.create_window(
+            (0, 0), window=self.palette_inner, anchor=tk.NW)
+
+        def _sync_palette_scroll(event=None):
+            self.palette_canvas.configure(scrollregion=self.palette_canvas.bbox("all"))
+            try:
+                self.palette_canvas.itemconfigure(
+                    self._palette_win, width=self.palette_canvas.winfo_width())
+            except Exception:
+                pass
+
+        self.palette_inner.bind("<Configure>", _sync_palette_scroll)
+        self.palette_canvas.bind(
+            "<Configure>",
+            lambda e: self.palette_canvas.itemconfigure(
+                self._palette_win, width=max(e.width, 160)))
+
+        def _palette_wheel(event):
+            if event.delta:
+                self.palette_canvas.yview_scroll(int(-event.delta / 120), "units")
+            elif getattr(event, "num", None) == 4:
+                self.palette_canvas.yview_scroll(-3, "units")
+            elif getattr(event, "num", None) == 5:
+                self.palette_canvas.yview_scroll(3, "units")
+
+        for w in (self.palette_canvas, self.palette_inner):
+            w.bind("<MouseWheel>", _palette_wheel)
+            w.bind("<Button-4>", _palette_wheel)
+            w.bind("<Button-5>", _palette_wheel)
+
+        grid_frame = tk.Frame(self.palette_inner, bg=theme["palette_bg"])
         grid_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
         self.palette_btns = {}
         row = 0
         col = 0
         for ctype, label, dw, dh, cap, icon in PALETTE:
-            # --- FIX: reduced padding and button size ---
             b = tk.Button(
                 grid_frame,
                 text=f"{icon}\n{label}",
                 bg=theme["btn_bg"], fg=theme["btn_fg"],
                 activebackground=theme["btn_active"],
                 relief=tk.FLAT,
-                font=("Segoe UI", 12, "bold"),   # keep for icon size
-                padx=2, pady=2,                  # reduced from 6,8
-                width=7, height=2,               # reduced from 9,4
+                font=("Segoe UI", 11, "bold"),
+                padx=2, pady=2,
+                width=7, height=2,
                 justify=tk.CENTER,
                 command=lambda t=ctype: self._select_tool(t)
             )
             b.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
             self.palette_btns[ctype] = b
+            bind_button_hover(b, theme)
+            b.bind("<MouseWheel>", _palette_wheel)
+            b.bind("<Button-4>", _palette_wheel)
+            b.bind("<Button-5>", _palette_wheel)
             col += 1
             if col >= 3:
                 col = 0
@@ -869,30 +1127,39 @@ class VertexIDE:
         for c in range(3):
             grid_frame.columnconfigure(c, weight=1)
 
-        # Separator
+        # Separator (fixed under scroll area)
         tk.Frame(self.palette, height=4, bg=theme["form_border"]).pack(fill=tk.X, padx=6, pady=4)
 
-        # Action buttons
-        tk.Button(self.palette, text="🗔 New Form", command=self.new_form,
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT,
-                  font=("Segoe UI",9), padx=8, pady=5).pack(fill=tk.X, padx=6, pady=2)
-        tk.Button(self.palette, text="⚙ Generate Code", command=lambda: self.generate_vcl_code(switch_to_code=True),
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT,
-                  font=("Segoe UI",9), padx=8, pady=5).pack(fill=tk.X, padx=6, pady=2)
-        tk.Button(self.palette, text="🗑 Clear Form", command=self.clear_form,
-                  bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT,
-                  font=("Segoe UI",9), padx=8, pady=5).pack(fill=tk.X, padx=6, pady=2)
+        # Action buttons (always visible)
+        for _txt, _cmd in (
+            ("🗔 New Form", self.new_form),
+            ("⚙ Generate Code", lambda: self.generate_vcl_code(switch_to_code=True)),
+            ("🗑 Clear Form", self.clear_form),
+        ):
+            _b = tk.Button(self.palette, text=_txt, command=_cmd,
+                           bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT,
+                           font=("Segoe UI", 9), padx=8, pady=5)
+            _b.pack(fill=tk.X, padx=6, pady=2)
+            bind_button_hover(_b, theme)
 
-        # Component Editor
+        # Component Editor + Events (tabbed)
         comp_outer = tk.Frame(right_split, bg=theme["prop_bg"])
-        right_split.add(comp_outer, minsize=200)
-        tk.Label(comp_outer, text="Component Editor", bg=theme["prop_bg"],
+        right_split.add(comp_outer, minsize=220)
+        self.prop_notebook = ttk.Notebook(comp_outer)
+        self.prop_notebook.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        props_tab = tk.Frame(self.prop_notebook, bg=theme["prop_bg"])
+        events_tab = tk.Frame(self.prop_notebook, bg=theme["prop_bg"])
+        self.prop_notebook.add(props_tab, text="  Properties  ")
+        self.prop_notebook.add(events_tab, text="  Events  ")
+        # keep name comp_outer for scroll host = props_tab
+        comp_outer_props = props_tab
+        tk.Label(props_tab, text="Component Editor", bg=theme["prop_bg"],
                  fg=theme["splash_fg"], font=("Segoe UI", 10, "bold")).pack(
                      pady=(8, 2), padx=6, anchor=tk.W)
 
-        comp_scroll = tk.Scrollbar(comp_outer, orient=tk.VERTICAL)
+        comp_scroll = tk.Scrollbar(props_tab, orient=tk.VERTICAL)
         comp_scroll.pack(side=tk.RIGHT, fill=tk.Y)
-        self.comp_canvas = tk.Canvas(comp_outer, bg=theme["prop_bg"], highlightthickness=0,
+        self.comp_canvas = tk.Canvas(props_tab, bg=theme["prop_bg"], highlightthickness=0,
                                      yscrollcommand=comp_scroll.set)
         self.comp_canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
         comp_scroll.config(command=self.comp_canvas.yview)
@@ -977,7 +1244,66 @@ class VertexIDE:
                   bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT,
                   padx=10).pack(side=tk.LEFT, padx=2)
 
+        # ----- Events tab (only events, with scrollbar) -----
+        tk.Label(events_tab, text="Events for selection", bg=theme["prop_bg"],
+                 fg=theme["splash_fg"], font=("Segoe UI", 9, "bold")).pack(
+                     anchor=tk.W, padx=8, pady=(8, 2))
+        self.events_sel = tk.Label(events_tab, text="(none selected)", bg=theme["prop_bg"],
+                                   fg=theme["line_fg"], font=("Segoe UI", 8), anchor=tk.W)
+        self.events_sel.pack(fill=tk.X, padx=8)
+
+        # Frame for list + scrollbar
+        events_frame = tk.Frame(events_tab, bg=theme["prop_bg"])
+        events_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=4)
+        events_scroll = tk.Scrollbar(events_frame, orient=tk.VERTICAL)
+        events_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+        self.events_list = tk.Listbox(events_frame, height=6, font=("Consolas", 10),
+                                      bg=theme.get("ac_bg", theme["btn_bg"]),
+                                      fg=theme.get("ac_fg", theme["btn_fg"]),
+                                      selectbackground=theme.get("accent", theme["select_bg"]),
+                                      relief=tk.FLAT,
+                                      yscrollcommand=events_scroll.set)
+        self.events_list.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        events_scroll.config(command=self.events_list.yview)
+
+        self.events_list.bind("<Double-Button-1>", lambda e: self._goto_default_event())
+        _eb = tk.Button(events_tab, text="⚡ Create / Jump to Handler",
+                        command=self._goto_default_event,
+                        bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT)
+        _eb.pack(fill=tk.X, padx=8, pady=6)
+        bind_button_hover(_eb, theme)
+
+        # ---------- Code Explorer tab ----------
+        explorer_tab = tk.Frame(self.notebook, bg=theme["bg"])
+        self.notebook.add(explorer_tab, text="  Code Explorer  ")
+
+        explorer_frame = tk.Frame(explorer_tab, bg=theme["bg"])
+        explorer_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+
+        self.explorer_tree = ttk.Treeview(explorer_frame, columns=("type",), show="tree headings", selectmode="browse")
+        self.explorer_tree.heading("#0", text="Symbol")
+        self.explorer_tree.column("#0", width=250, minwidth=150)
+        self.explorer_tree.heading("type", text="Kind")
+        self.explorer_tree.column("type", width=120, minwidth=80, anchor="w")
+
+        explorer_vscroll = ttk.Scrollbar(explorer_frame, orient=tk.VERTICAL, command=self.explorer_tree.yview)
+        self.explorer_tree.configure(yscrollcommand=explorer_vscroll.set)
+
+        self.explorer_tree.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        explorer_vscroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+        self.explorer_tree.bind("<Double-Button-1>", self._explorer_goto)
+        self.explorer_tree.bind("<<TreeviewSelect>>", self._explorer_select)
+
+        # store current explorer items for navigation
+        self._explorer_items = {}  # iid -> (line, col, name, kind)
+
         self.root.bind("<Control-n>", lambda e: self.new_file())
+        self.root.bind("<Control-z>", lambda e: (self.undo(), "break")[1])
+        self.root.bind("<Control-y>", lambda e: (self.redo(), "break")[1])
+        self.root.bind("<Control-Z>", lambda e: (self.undo(), "break")[1])
+        self.root.bind("<Control-Y>", lambda e: (self.redo(), "break")[1])
+        self.root.bind("<Control-Shift-Z>", lambda e: (self.redo(), "break")[1])
         self.root.bind("<Control-o>", lambda e: self.open_file())
         self.root.bind("<Control-s>", lambda e: self.save_file())
         self.root.bind("<F5>", lambda e: self.compile_file())
@@ -993,10 +1319,346 @@ class VertexIDE:
         self._update_ui_mode()
         self.root.after(80, self._place_sidebar_sash)
 
+    # ---------- Edit menu commands + undo/redo (10 levels) ----------
+    def _base_title(self):
+        if self.current_file:
+            return f"{APP_NAME} v{APP_VERSION} - {os.path.basename(self.current_file)}"
+        return f"{APP_NAME} v{APP_VERSION} - Untitled"
+
+    def _update_window_title(self):
+        title = self._base_title()
+        if self._dirty:
+            title += " *"
+        try:
+            self.root.title(title)
+        except Exception:
+            pass
+
+    def _mark_dirty(self, dirty=True):
+        self._dirty = bool(dirty)
+        self._update_window_title()
+        # Do NOT touch edit_modified here — it can fire <<Modified>> and wipe redo.
+
+    def _push_undo_snapshot(self, snapshot=None):
+        """Store text *before* a user edit. Max 10. Clears redo (new branch)."""
+        if getattr(self, "_suspend_undo", False):
+            return
+        if snapshot is None:
+            snapshot = self.editor.get("1.0", "end-1c")
+        if self._undo_stack and self._undo_stack[-1] == snapshot:
+            return
+        self._undo_stack.append(snapshot)
+        if len(self._undo_stack) > self._undo_max:
+            self._undo_stack.pop(0)
+        # New user edit invalidates redo
+        self._redo_stack.clear()
+
+    def _apply_editor_text(self, content, mark_dirty=True):
+        """Replace editor text during undo/redo without touching history stacks."""
+        self._suspend_undo = True
+        try:
+            try:
+                cursor = self.editor.index(tk.INSERT)
+            except Exception:
+                cursor = "1.0"
+            self.editor.delete("1.0", tk.END)
+            self.editor.insert("1.0", content)
+            try:
+                self.editor.mark_set(tk.INSERT, cursor)
+                self.editor.see(cursor)
+            except Exception:
+                pass
+            try:
+                self.editor.edit_modified(False)
+            except Exception:
+                pass
+            self._last_snapshot = content
+            if mark_dirty:
+                self._mark_dirty(True)
+            self.root.after(10, lambda: highlight(self.editor))
+            self.update_line_numbers()
+        finally:
+            # Keep suspended briefly so delayed <<Modified>> cannot clear redo
+            def _end_suspend():
+                self._suspend_undo = False
+                try:
+                    self.editor.edit_modified(False)
+                except Exception:
+                    pass
+            self.root.after(100, _end_suspend)
+
+    def undo(self):
+        """Revert to previous snapshot; current text becomes the next Redo."""
+        if not self._undo_stack:
+            self.status("Nothing to undo")
+            return
+        current = self.editor.get("1.0", "end-1c")
+        prev = self._undo_stack.pop()
+        # Remember what we just undid so Redo can put it back
+        self._redo_stack.append(current)
+        while len(self._redo_stack) > self._undo_max:
+            self._redo_stack.pop(0)
+        self._apply_editor_text(prev, mark_dirty=True)
+        self.status("Undo restored earlier text  |  Redo available: %d" % len(self._redo_stack))
+
+    def redo(self):
+        """Restore the text that was removed by the last Undo (or sequence)."""
+        if not self._redo_stack:
+            self.status("Nothing to redo — undo something first")
+            return
+        current = self.editor.get("1.0", "end-1c")
+        # Last undone state is on top of redo stack
+        restored = self._redo_stack.pop()
+        # Current view goes back onto undo so you can undo the redo
+        self._undo_stack.append(current)
+        while len(self._undo_stack) > self._undo_max:
+            self._undo_stack.pop(0)
+        self._apply_editor_text(restored, mark_dirty=True)
+        self.status("Redo restored last undo  |  Redo left: %d" % len(self._redo_stack))
+
+    def cut(self):
+        try:
+            self._push_undo_snapshot()
+            self.editor.event_generate("<<Cut>>")
+            self._mark_dirty(True)
+            self._last_snapshot = self.editor.get("1.0", "end-1c")
+        except Exception:
+            pass
+
+    def copy(self):
+        try:
+            self.editor.event_generate("<<Copy>>")
+        except Exception:
+            pass
+
+    def paste(self):
+        try:
+            self._push_undo_snapshot()
+            self.editor.event_generate("<<Paste>>")
+            self._mark_dirty(True)
+            self._last_snapshot = self.editor.get("1.0", "end-1c")
+        except Exception:
+            pass
+
+    def select_all(self):
+        try:
+            self.editor.tag_add("sel", "1.0", "end-1c")
+            self.editor.mark_set(tk.INSERT, "end-1c")
+            self.editor.see(tk.INSERT)
+        except Exception:
+            pass
+
+    # ---------- Code Explorer methods ----------
+    def _update_code_explorer(self):
+        """Parse editor content into a hierarchical Code Explorer tree."""
+        if not hasattr(self, "explorer_tree"):
+            return
+        tree = self.explorer_tree
+        tree.delete(*tree.get_children())
+        self._explorer_items = {}  # iid -> (line, col, name, kind)
+
+        src = self.editor.get("1.0", "end-1c")
+        if not src.strip():
+            self.status("Code Explorer: (empty)")
+            return
+
+        src_lines = src.splitlines()
+
+        def line_of(pos):
+            return src[:pos].count("\n") + 1
+
+        class_hdr = re.compile(r'(?im)^\s*(\w+)\s*=\s*Class(?:\s*\(\s*(\w+)\s*\))?\s*$')
+        end_re = re.compile(r'(?im)^\s*End\s*;\s*$')
+        field_re = re.compile(r'(?im)^\s*(\w+)\s*:\s*([\w\^\[\]\.0-9]+)\s*;')
+        meth_decl = re.compile(
+            r'(?im)^\s*(Constructor|Destructor|Proc|Func|Procedure|Function)\s+'
+            r'(?:(\w+)\.)?(\w+)\s*(?:\(|;|:)'
+        )
+        section_re = re.compile(r'(?im)^\s*(Private|Public|Protected)\s*$')
+
+        classes = []
+        i = 0
+        while i < len(src_lines):
+            m = class_hdr.match(src_lines[i])
+            if not m:
+                i += 1
+                continue
+            cname = m.group(1)
+            base = m.group(2) or ""
+            start_i = i
+            depth = 1
+            j = i + 1
+            body_end = len(src_lines) - 1
+            while j < len(src_lines):
+                if class_hdr.match(src_lines[j]):
+                    depth += 1
+                elif end_re.match(src_lines[j]):
+                    depth -= 1
+                    if depth == 0:
+                        body_end = j
+                        break
+                j += 1
+            fields, methods = [], []
+            section = "Public"
+            for k in range(start_i + 1, body_end):
+                sm = section_re.match(src_lines[k])
+                if sm:
+                    section = sm.group(1)
+                    continue
+                mm = meth_decl.match(src_lines[k])
+                if mm:
+                    methods.append((mm.group(3), mm.group(1), section, k + 1))
+                    continue
+                fm = field_re.match(src_lines[k])
+                if fm:
+                    fname = fm.group(1)
+                    if fname.lower() not in ("proc", "func", "constructor", "destructor", "end", "var", "type"):
+                        fields.append((fname, fm.group(2), section, k + 1))
+            classes.append({
+                "name": cname, "base": base, "start": start_i + 1, "end": body_end + 1,
+                "fields": fields, "methods": methods,
+            })
+            i = body_end + 1
+
+        class_names = {c["name"] for c in classes}
+
+        impl_methods = []
+        impl_re = re.compile(
+            r'(?im)^\s*(Constructor|Destructor|Proc|Func|Procedure|Function)\s+'
+            r'(?:(\w+)\.)?(\w+)\s*(?:\(|;|:)'
+        )
+        for idx, line in enumerate(src_lines):
+            mm = impl_re.match(line)
+            if not mm:
+                continue
+            impl_methods.append((mm.group(2), mm.group(3), mm.group(1), idx + 1))
+
+        enter_m = re.search(r'(?im)^\s*Enter\s+(\w+)\s*;', src)
+        prog_name = enter_m.group(1) if enter_m else "Program"
+        prog_line = line_of(enter_m.start()) if enter_m else 1
+
+        globals_vars = []
+        var_block = re.search(r'(?im)^\s*Var\b', src)
+        if var_block:
+            start_pos = var_block.end()
+            stop = re.search(r'(?im)^\s*(Run|Proc|Func|Type|Enter|Exit|Constructor|Destructor)\b', src[start_pos:])
+            block = src[start_pos: start_pos + stop.start()] if stop else src[start_pos:]
+            for vm in re.finditer(r'(?im)^\s*(\w+)\s*:\s*([\w\^\[\]\.0-9]+)\s*;', block):
+                globals_vars.append((vm.group(1), vm.group(2), line_of(start_pos + vm.start())))
+
+        imports = []
+        for im in re.finditer(r'(?im)^\s*Import\s+("[^"]+"|<[^>]+>)\s*;', src):
+            imports.append((im.group(1), line_of(im.start())))
+
+        uid = [0]
+        def add(parent, text_label, kind, line, col=0):
+            uid[0] += 1
+            iid = "e%d" % uid[0]
+            tree.insert(parent, "end", iid=iid, text=text_label, values=(kind,), open=True)
+            self._explorer_items[iid] = (line, col, text_label, kind)
+            return iid
+
+        root_id = add("", "📁 %s" % prog_name, "Program", prog_line)
+
+        if imports:
+            imp_node = add(root_id, "📦 Imports", "Group", imports[0][1])
+            for name, ln in imports:
+                add(imp_node, name, "Import", ln)
+
+        if classes:
+            types_node = add(root_id, "📂 Types / Classes", "Group", classes[0]["start"])
+            for c in classes:
+                label = c["name"]
+                if c["base"]:
+                    label = "%s (%s)" % (c["name"], c["base"])
+                cnode = add(types_node, "🔷 %s" % label, "Class", c["start"])
+                if c["fields"]:
+                    fnode = add(cnode, "Fields", "Group", c["fields"][0][3])
+                    for fname, ftype, section, ln in c["fields"]:
+                        add(fnode, "%s: %s" % (fname, ftype), "Field/%s" % section, ln)
+                if c["methods"]:
+                    mnode = add(cnode, "Methods", "Group", c["methods"][0][3])
+                    for mname, kind, section, ln in c["methods"]:
+                        kl = kind.lower()
+                        icon = "⚙" if kl in ("proc", "procedure") else ("ƒ" if kl in ("func", "function") else "★")
+                        add(mnode, "%s %s" % (icon, mname), "%s/%s" % (kind, section), ln)
+                extra = [im for im in impl_methods if im[0] == c["name"]]
+                if extra:
+                    inode = add(cnode, "Implementations", "Group", extra[0][3])
+                    for cls, mname, kind, ln in extra:
+                        add(inode, "→ %s %s" % (kind, mname), "Impl", ln)
+
+        standalone = []
+        seen = set()
+        for cls, name, kind, ln in impl_methods:
+            key = (name, ln)
+            if key in seen:
+                continue
+            seen.add(key)
+            inside = any(c["start"] <= ln <= c["end"] for c in classes)
+            if inside:
+                continue
+            if cls and cls in class_names:
+                continue
+            standalone.append((cls, name, kind, ln))
+        if standalone:
+            rout_node = add(root_id, "📂 Routines", "Group", standalone[0][3])
+            for cls, name, kind, ln in standalone:
+                label = "%s.%s" % (cls, name) if cls else name
+                add(rout_node, "⚙ %s" % label, kind, ln)
+
+        if globals_vars:
+            vnode = add(root_id, "📂 Variables", "Group", globals_vars[0][2])
+            for name, vtype, ln in globals_vars:
+                add(vnode, "%s: %s" % (name, vtype), "Var", ln)
+
+        self.status("Code Explorer: %d symbols" % len(self._explorer_items))
+
+    def _explorer_goto(self, event=None):
+        sel = self.explorer_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        info = self._explorer_items.get(iid)
+        if not info:
+            return
+        line, col, text_label, kind = info
+        if kind == "Group":
+            return
+        try:
+            self.notebook.select(0)
+        except Exception:
+            pass
+        self.editor.focus_set()
+        pos = "%d.%d" % (line, col)
+        self.editor.mark_set(tk.INSERT, pos)
+        self.editor.see(pos)
+        self.editor.tag_remove("sel", "1.0", tk.END)
+        self.editor.tag_add("sel", "%d.0" % line, "%d.end" % line)
+        self.update_cursor_position()
+        self.status("Jumped to %s  (line %d)" % (text_label, line))
+
+    def _explorer_select(self, event=None):
+        sel = self.explorer_tree.selection()
+        if not sel:
+            return
+        iid = sel[0]
+        info = self._explorer_items.get(iid)
+        if info:
+            line, col, text_label, kind = info
+            self.status("%s: %s  — line %d" % (kind, text_label, line))
+        else:
+            self.status("Symbol: %s" % self.explorer_tree.item(sel[0], "text"))
+
     def _refresh_color_swatch(self):
         if not hasattr(self, "color_swatch"):
             return
-        label = self.prop_vars.get("color").get() if self.prop_vars.get("color") else "(default)"
+        label = "(default)"
+        try:
+            if self.prop_vars.get("color"):
+                label = self.prop_vars["color"].get() or "(default)"
+        except Exception:
+            pass
         entry = COLOR_BY_LABEL.get(label)
         hexv = entry[1] if entry and entry[1] else None
         theme = THEMES[self.current_theme]
@@ -1010,21 +1672,28 @@ class VertexIDE:
         except Exception:
             pass
         if hasattr(self, "color_btn"):
-            self.color_btn.config(text=f"{label}  ▼")
+            try:
+                self.color_btn.config(text=f"{label}  ▼")
+            except Exception:
+                pass
 
     def _set_color_choice(self, label):
-        self.prop_vars["color"].set(label)
+        if "color" in self.prop_vars:
+            self.prop_vars["color"].set(label)
         self._refresh_color_swatch()
-        if self._color_popup is not None:
+        if getattr(self, "_color_popup", None) is not None:
             try:
                 self._color_popup.destroy()
             except Exception:
                 pass
             self._color_popup = None
-        self._apply_props()
+        try:
+            self._apply_props()
+        except Exception:
+            pass
 
     def _open_color_picker(self):
-        if self._color_popup is not None:
+        if getattr(self, "_color_popup", None) is not None:
             try:
                 self._color_popup.destroy()
             except Exception:
@@ -1058,17 +1727,15 @@ class VertexIDE:
                          highlightbackground=theme.get("form_border", "#666"))
         outer.pack(fill=tk.BOTH, expand=True)
 
-        header = tk.Label(outer, text="Choose color", anchor=tk.W,
-                          bg=theme["prop_bg"], fg=theme.get("splash_fg", theme["btn_fg"]),
-                          font=("Segoe UI", 9, "bold"), padx=8, pady=4)
-        header.pack(fill=tk.X)
+        tk.Label(outer, text="Choose color", anchor=tk.W,
+                 bg=theme["prop_bg"], fg=theme.get("splash_fg", theme["btn_fg"]),
+                 font=("Segoe UI", 9, "bold"), padx=8, pady=4).pack(fill=tk.X)
 
         list_frame = tk.Frame(outer, bg=theme["prop_bg"])
         list_frame.pack(fill=tk.BOTH, expand=True, padx=2, pady=(0, 2))
 
         scroll = tk.Scrollbar(list_frame, orient=tk.VERTICAL)
         scroll.pack(side=tk.RIGHT, fill=tk.Y)
-
         canvas = tk.Canvas(list_frame, bg=theme["prop_bg"], highlightthickness=0,
                            yscrollcommand=scroll.set)
         canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
@@ -1088,11 +1755,11 @@ class VertexIDE:
         canvas.bind("<Configure>", lambda e: canvas.itemconfigure(win_id, width=max(e.width, 200)))
 
         def _wheel(event):
-            if event.delta:
+            if getattr(event, "delta", 0):
                 canvas.yview_scroll(int(-event.delta / 120), "units")
-            elif event.num == 4:
+            elif getattr(event, "num", None) == 4:
                 canvas.yview_scroll(-3, "units")
-            elif event.num == 5:
+            elif getattr(event, "num", None) == 5:
                 canvas.yview_scroll(3, "units")
 
         for w in (pop, outer, list_frame, canvas, inner):
@@ -1100,11 +1767,10 @@ class VertexIDE:
             w.bind("<Button-4>", _wheel)
             w.bind("<Button-5>", _wheel)
 
-        current = self.prop_vars["color"].get()
+        current = self.prop_vars["color"].get() if "color" in self.prop_vars else "(default)"
         for label, hexv, rgb in COLOR_CHOICES:
             row = tk.Frame(inner, bg=theme["prop_bg"], cursor="hand2")
             row.pack(fill=tk.X, padx=2, pady=1)
-
             sw = tk.Canvas(row, width=22, height=16, highlightthickness=1,
                            highlightbackground="#666666")
             if hexv:
@@ -1114,7 +1780,6 @@ class VertexIDE:
                 sw.create_line(2, 2, 20, 14, fill="#888")
                 sw.create_line(20, 2, 2, 14, fill="#888")
             sw.pack(side=tk.LEFT, padx=(6, 8), pady=3)
-
             font = ("Segoe UI", 9, "bold") if label == current else ("Segoe UI", 9)
             lbl = tk.Label(row, text=label, anchor=tk.W, bg=theme["prop_bg"],
                            fg=theme["btn_fg"], font=font)
@@ -1155,21 +1820,27 @@ class VertexIDE:
                 self._color_popup = None
 
         pop.bind("<Escape>", _close)
-        pop.after(100, lambda: self._safe_grab(pop))
+        # click-away: bind root once
+        def _click_away(event):
+            if self._color_popup is None:
+                return
+            try:
+                wx = self._color_popup.winfo_rootx()
+                wy = self._color_popup.winfo_rooty()
+                ww = self._color_popup.winfo_width()
+                wh = self._color_popup.winfo_height()
+                if not (wx <= event.x_root <= wx + ww and wy <= event.y_root <= wy + wh):
+                    _close()
+            except Exception:
+                _close()
+        self.root.bind("<Button-1>", _click_away, add="+")
         pop.focus_force()
         _sync_scroll()
 
-    def _safe_grab(self, pop):
-        try:
-            if pop.winfo_exists():
-                pop.grab_set_global()
-        except Exception:
-            try:
-                pop.grab_set()
-            except Exception:
-                pass
+
 
     def _place_sidebar_sash(self):
+        """Position the main paned window sash so the right sidebar has the configured width."""
         try:
             if not hasattr(self, "main_pane"):
                 return
@@ -1183,7 +1854,7 @@ class VertexIDE:
         except Exception:
             pass
 
-    # ---------- UI mode ----------
+
     def _update_ui_mode(self):
         source = self.editor.get("1.0","end-1c") if hasattr(self,"editor") else ""
         auto = self.config.get("auto_detect_gui", True)
@@ -1210,25 +1881,31 @@ class VertexIDE:
             b = tk.Button(self.toolbar, text=text, command=cmd, **style)
             b.pack(side=tk.LEFT, padx=2, pady=4)
             self.toolbar_buttons.append(b)
+            bind_button_hover(b, theme)
             if tip:
-                b.bind("<Enter>", lambda e,t=tip: self.status(t))
-                b.bind("<Leave>", lambda e: self.status("Ready"))
+                # status tip on enter — chain after hover leave restores colors
+                def _st_enter(e, t=tip, btn=b):
+                    self.status(t)
+                def _st_leave(e):
+                    self.status("Ready")
+                b.bind("<Enter>", _st_enter, add="+")
+                b.bind("<Leave>", _st_leave, add="+")
                 ToolTip(b, tip)
             return b
 
-        add("⚙ Compile", self.compile_file, "Compile (F5)")
-        add("▶ Run", self.run_program, "Run (F6)")
-        add("📁 Folder", self.show_folder, "Open output folder")
+        add("⚙️  Compile", self.compile_file, "Compile (F5)")
+        add("▶️  Run", self.run_program, "Run (F6)")
+        add("📁  Folder", self.show_folder, "Open output folder")
         tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        add("📄 New", self.new_file, "New file (Ctrl+N)")
-        add("📂 Open", self.open_file, "Open file (Ctrl+O)")
-        add("💾 Save", self.save_file, "Save (Ctrl+S)")
+        add("📄  New", self.new_file, "New file (Ctrl+N)")
+        add("📂  Open", self.open_file, "Open file (Ctrl+O)")
+        add("💾  Save", self.save_file, "Save (Ctrl+S)")
         tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        add("🗔 New Form", self.new_form, "Create a blank form")
-        add("⚙ Gen Code", lambda: self.generate_vcl_code(switch_to_code=True), "Generate Vertex VCL from form")
-        add("↻ Sync", self.sync_from_code, "Sync form from code")
+        add("🗔  Form", self.new_form, "Create a blank form")
+        add("⚡  Gen", lambda: self.generate_vcl_code(switch_to_code=True), "Generate Vertex VCL from form")
+        add("🔄  Sync", self.sync_from_code, "Sync form from code")
         tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        self.mode_btn = add("GUI" if self.gui_mode else "Console", self.toggle_mode,
+        self.mode_btn = add(("🖥  GUI" if self.gui_mode else "💻  Console"), self.toggle_mode,
                             "Toggle GUI / Console")
         tk.Label(self.toolbar, text=f" {self.current_theme.capitalize()} ",
                  bg=theme["toolbar_bg"], fg=theme["line_fg"], font=("Segoe UI",8)).pack(side=tk.RIGHT, padx=6)
@@ -1409,9 +2086,9 @@ class VertexIDE:
     def _select_tool(self, ctype):
         self.palette_tool = ctype
         theme = THEMES[self.current_theme]
-        for t,b in self.palette_btns.items():
+        for t, b in self.palette_btns.items():
             if t == ctype:
-                b.config(bg=theme["splash_fg"], fg="#ffffff")
+                b.config(bg=theme.get("accent", theme["splash_fg"]), fg="#ffffff")
             else:
                 b.config(bg=theme["btn_bg"], fg=theme["btn_fg"])
         self.status(f"Tool: {ctype}")
@@ -1739,25 +2416,37 @@ class VertexIDE:
         elif ctrl.ctype == "panel":
             items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
                           fill=fill or "#f0f0f0", outline=outline, width=width))
+        elif ctrl.ctype == "statusbar":
+            items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
+                          fill=fill or "#e8eef7", outline=outline, width=width))
+            items.append(self.form_canvas.create_text(x+8, y+h//2,
+                          text=ctrl.caption or "Ready", anchor=tk.W,
+                          font=("Segoe UI", 8), fill="#1e3a5f"))
+        elif ctrl.ctype == "hyperterm":
+            items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
+                          fill=fill or "#0b1020", outline=outline, width=width))
+            items.append(self.form_canvas.create_text(x+8, y+10,
+                          text="HyperTerm>", anchor=tk.NW,
+                          font=("Consolas", 8), fill="#3ddc97"))
+        elif ctrl.ctype == "timer":
+            items.append(self.form_canvas.create_oval(x, y, x+w, y+h,
+                          fill=fill or "#fff7ed", outline=outline, width=width))
+            items.append(self.form_canvas.create_text(x+w//2, y+h//2,
+                          text=ctrl.caption or "⏱", font=("Segoe UI", 9), fill="#c2410c"))
+        elif ctrl.ctype == "sevenseg":
+            # Realistic multi-digit LED seven-segment preview
+            bg = fill or "#0f0808"
+            items.append(self.form_canvas.create_rectangle(
+                x, y, x + w, y + h, fill=bg, outline=outline or "#3f1a1a", width=max(width, 2)))
+            cap = "".join(ch for ch in (ctrl.caption or "0") if ch.isdigit()) or "0"
+            n = max(1, min(6, len(cap)))
+            self._draw_seven_seg_multi(items, x, y, w, h, cap[-n:], theme)
         elif ctrl.ctype == "comport":
             items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
                           fill=fill or "#1a1a2e", outline=outline, width=width))
             items.append(self.form_canvas.create_text(x+w//2, y+h//2,
                           text=ctrl.caption or "COM1", anchor=tk.CENTER,
                           font=("Segoe UI", 8, "bold"), fill="#7fdbff"))
-        elif ctrl.ctype == "statusbar":
-            items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
-                          fill=fill or "#e0e0e0", outline=outline, width=width))
-            items.append(self.form_canvas.create_line(x+2, y+h-2, x+w-2, y+h-2,
-                          fill="#aaa"))
-            for i in range(3):
-                dx = x+w - 10 - i*4
-                dy = y+h - 10 - i*4
-                items.append(self.form_canvas.create_line(dx, dy+h-2, dx+h-2, dy,
-                              fill="#aaa"))
-            items.append(self.form_canvas.create_text(x+6, y+h//2,
-                          text=ctrl.caption or "Status", anchor=tk.W,
-                          font=("Segoe UI", 8), fill="#333"))
         else:
             items.append(self.form_canvas.create_rectangle(x, y, x+w, y+h,
                           fill=fill or "#ffffff", outline=outline, width=width))
@@ -1770,6 +2459,100 @@ class VertexIDE:
             self.form_canvas.addtag_withtag("control", item)
         ctrl.widget = items
 
+    def _draw_seven_seg_multi(self, items, x, y, w, h, digits, theme):
+        """Draw one or more LED-style seven-segment digits."""
+        digits = digits or "0"
+        n = len(digits)
+        pad = max(4, min(w, h) // 16)
+        gap = max(3, w // (n * 12 + 1))
+        dig_w = max(12, (w - 2 * pad - (n - 1) * gap) // n)
+        dig_h = max(16, h - 2 * pad)
+        x0 = x + pad
+        y0 = y + pad
+        for i, ch in enumerate(digits):
+            d = int(ch) if ch.isdigit() else -1
+            self._draw_seven_seg(items, x0 + i * (dig_w + gap), y0, dig_w, dig_h, d, theme)
+
+    def _draw_seven_seg(self, items, x, y, w, h, digit, theme):
+        """Draw a single digit with tapered hexagonal LED segments (real 7-seg shape)."""
+        segments_map = {
+            0: (1, 1, 1, 1, 1, 1, 0),
+            1: (0, 1, 1, 0, 0, 0, 0),
+            2: (1, 1, 0, 1, 1, 0, 1),
+            3: (1, 1, 1, 1, 0, 0, 1),
+            4: (0, 1, 1, 0, 0, 1, 1),
+            5: (1, 0, 1, 1, 0, 1, 1),
+            6: (1, 0, 1, 1, 1, 1, 1),
+            7: (1, 1, 1, 0, 0, 0, 0),
+            8: (1, 1, 1, 1, 1, 1, 1),
+            9: (1, 1, 1, 1, 0, 1, 1),
+        }
+        seg = (0, 0, 0, 0, 0, 0, 0) if digit < 0 else segments_map.get(digit, (0, 0, 0, 0, 0, 0, 0))
+        t = max(2, min(w, h) // 8)
+        d = max(1, t // 2)
+        mid = y + h // 2
+        on, off = "#ff2e2e", "#3a1010"
+
+        def hex_h(x1, y0, x2, th, color):
+            # horizontal hexagon: pointed ends
+            pts = [
+                x1 + d, y0,
+                x2 - d, y0,
+                x2, y0 + d,
+                x2 - d, y0 + th,
+                x1 + d, y0 + th,
+                x1, y0 + d,
+            ]
+            items.append(self.form_canvas.create_polygon(pts, fill=color, outline=color, width=0))
+
+        def hex_v(x0, y1, y2, th, color):
+            # vertical hexagon: pointed ends
+            pts = [
+                x0 + d, y1,
+                x0 + th, y1 + d,
+                x0 + th, y2 - d,
+                x0 + d, y2,
+                x0, y2 - d,
+                x0, y1 + d,
+            ]
+            items.append(self.form_canvas.create_polygon(pts, fill=color, outline=color, width=0))
+
+        xR = x + w - t
+        yB = y + h - t
+        # A B C D E F G
+        hex_h(x + t, y, x + w - t, t, on if seg[0] else off)
+        hex_v(xR, y + t, mid, t, on if seg[1] else off)
+        hex_v(xR, mid, yB, t, on if seg[2] else off)
+        hex_h(x + t, yB, x + w - t, t, on if seg[3] else off)
+        hex_v(x, mid, yB, t, on if seg[4] else off)
+        hex_v(x, y + t, mid, t, on if seg[5] else off)
+        hex_h(x + t, mid - t // 2, x + w - t, t, on if seg[6] else off)
+
+    def _refresh_events_panel(self, ctrl=None):
+        """Fill Events tab with event list for selected control or form."""
+        if not hasattr(self, "events_list"):
+            return
+        self.events_list.delete(0, tk.END)
+        title = "(none selected)"
+        events = []
+        if self.selected_form:
+            title = "Form: " + self.form_title
+            info = COMPONENT_INFO.get("form", {})
+            events = info.get("events", [])
+        elif ctrl is not None:
+            title = "%s  [%s]" % (ctrl.name, ctrl.ctype)
+            info = COMPONENT_INFO.get(ctrl.ctype, {})
+            events = list(info.get("events", []))
+        elif self.selected_control is not None:
+            return self._refresh_events_panel(self.selected_control)
+        if hasattr(self, "events_sel"):
+            self.events_sel.config(text=title)
+        if not events:
+            self.events_list.insert(tk.END, "(no events)")
+        else:
+            for ev in events:
+                self.events_list.insert(tk.END, ev)
+
     def _select_control(self, ctrl):
         if self.selected_control and self.selected_control is not ctrl:
             self.selected_control.selected = False
@@ -1780,6 +2563,7 @@ class VertexIDE:
             self._redraw_all()
             self._load_props(ctrl)
             self.comp_sel_label.config(text=f"{ctrl.name}  [{ctrl.ctype}]")
+            self._refresh_events_panel(ctrl)
             self.status(f"Selected {ctrl.name}")
         else:
             self.comp_sel_label.config(text="(none selected)")
@@ -1791,6 +2575,7 @@ class VertexIDE:
         self.selected_form = True
         self.comp_sel_label.config(text="Form: " + self.form_title)
         self._load_form_props()
+        self._refresh_events_panel(None)
         self.status("Form selected")
         self._redraw_all()
 
@@ -2375,15 +3160,20 @@ class VertexIDE:
     # ---------- Tab change ----------
     def _on_tab_changed(self, event=None):
         try:
-            if not hasattr(self, "notebook") or not hasattr(self, "design_tab_index"):
+            if not hasattr(self, "notebook"):
                 return
             current = self.notebook.index(self.notebook.select())
-            if current == self.design_tab_index:
+            if hasattr(self, "design_tab_index") and current == self.design_tab_index:
                 self.root.after(30, self.sync_from_code)
+            try:
+                tab_text = self.notebook.tab(current, "text")
+            except Exception:
+                tab_text = ""
+            if "Explorer" in str(tab_text):
+                self.root.after(40, self._update_code_explorer)
         except Exception:
             pass
 
-    # ---------- Code generation ----------
     def generate_vcl_code(self, switch_to_code=True):
         self._apply_form_size()
         title = self.form_title_var.get().strip() or "Form1"
@@ -2448,17 +3238,50 @@ class VertexIDE:
             elif c.ctype == "panel":
                 lines.append(f'  {c.name} <- Panel({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
             elif c.ctype == "statusbar":
-                lines.append(f'  {c.name} <- Label({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
-                lines.append(f'  {{ StatusBar mapped to Label }}')
+                lines.append(f'  {c.name} <- StatusBar({parent}, {c.h});')
+                if c.caption:
+                    lines.append(f'  SetText({c.name}, "{c.caption}");')
+            elif c.ctype == "hyperterm":
+                lines.append(f'  {c.name} <- HyperTerm({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
+            elif c.ctype == "timer":
+                lines.append(f'  {{ Timer {c.name} — interval from caption }}')
+                try:
+                    interval = int(''.join(ch for ch in (c.caption or "1000") if ch.isdigit()) or "1000")
+                except Exception:
+                    interval = 1000
+                lines.append(f'  OnTimer(@OnControlTimer);')
+                lines.append(f'  StartTimer({interval});')
+            elif c.ctype == "sevenseg":
+                lines.append(f'  {c.name} <- SevenSeg({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
+                digits = ''.join(ch for ch in (c.caption or "0") if ch.isdigit()) or "0"
+                try:
+                    val = int(digits)
+                except Exception:
+                    val = 0
+                nd = max(1, min(6, len(digits)))
+                if nd > 1:
+                    lines.append(f'  SetSevenSegDigits({c.name}, {val}, {nd});')
+                else:
+                    lines.append(f'  SetSevenSeg({c.name}, {val});')
+                rgb = color_rgb_from_stored(c.color or "")
+                if rgb:
+                    r, g, b = rgb
+                    # on / off / bg derived from chosen color
+                    lines.append(
+                        f'  SetSevenSegColor({c.name}, ColorRGB({r}, {g}, {b}), '
+                        f'ColorRGB({max(r//6, 8)}, {max(g//6, 4)}, {max(b//6, 4)}), '
+                        f'ColorRGB({max(r//12, 4)}, {max(g//12, 2)}, {max(b//12, 2)}));'
+                    )
             else:
                 lines.append(f'  {c.name} <- Label({parent}, {c.w}, {c.h}, {c.x}, {c.y});')
 
-            if c.caption and c.ctype not in ("listbox", "combo", "statusbar"):
+            if c.caption and c.ctype not in ("listbox", "combo", "statusbar", "sevenseg", "timer", "comport"):
                 lines.append(f'  SetText({c.name}, "{c.caption}");')
-            rgb = color_rgb_from_stored(c.color or "")
-            if rgb:
-                r, g, b = rgb
-                lines.append(f'  SetBackColor({c.name}, ColorRGB({r}, {g}, {b}));')
+            if c.ctype != "sevenseg":
+                rgb = color_rgb_from_stored(c.color or "")
+                if rgb:
+                    r, g, b = rgb
+                    lines.append(f'  SetBackColor({c.name}, ColorRGB({r}, {g}, {b}));')
             lines.append('')
 
         if buttons:
@@ -2477,7 +3300,10 @@ class VertexIDE:
         self.root.after(30, lambda: highlight(self.editor))
         self.update_line_numbers()
         self.status(f"Generated VCL code for {title} ({len(self.design_controls)} controls)")
+        self._mark_dirty(True)
+        self._last_snapshot = self.editor.get("1.0", "end-1c")
         self._append_output(f"Generated form '{title}' with {len(self.design_controls)} control(s).\n", "success")
+        self.root.after(100, self._update_code_explorer)
 
     # ---------- Editor helpers ----------
     def _on_editor_scroll(self, *args):
@@ -2518,23 +3344,71 @@ class VertexIDE:
         except Exception:
             pass
 
+    def _on_key_press(self, event):
+        """Before each key, remember text so we can push undo after the change."""
+        if self._suspend_undo:
+            return
+        # ignore pure modifiers / navigation that don't change text alone
+        if event.keysym in (
+            "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+            "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+            "Escape", "Caps_Lock", "Num_Lock", "Scroll_Lock",
+        ):
+            return
+        # Ctrl shortcuts handled elsewhere
+        if event.state & 0x4:  # Control
+            return
+        self._last_snapshot = self.editor.get("1.0", "end-1c")
+
     def _on_key_release(self, event):
         self.update_line_numbers()
         self.update_cursor_position()
         if self._highlight_job:
-            self.root.after_cancel(self._highlight_job)
+            try:
+                self.root.after_cancel(self._highlight_job)
+            except Exception:
+                pass
         self._highlight_job = self.root.after(80, lambda: highlight(self.editor))
         try:
             self._editor_keyrelease_ac(event)
         except Exception:
             pass
+        # After key, if text changed vs snapshot → push undo + dirty
+        if self._suspend_undo:
+            return
+        if event.keysym in (
+            "Shift_L", "Shift_R", "Control_L", "Control_R", "Alt_L", "Alt_R",
+            "Left", "Right", "Up", "Down", "Home", "End", "Prior", "Next",
+            "Escape",
+        ):
+            return
+        if event.state & 0x4:
+            return
+        try:
+            current = self.editor.get("1.0", "end-1c")
+            if self._last_snapshot is not None and current != self._last_snapshot:
+                self._push_undo_snapshot(self._last_snapshot)
+                self._mark_dirty(True)
+                self._last_snapshot = current
+            elif self._last_snapshot is None:
+                self._last_snapshot = current
+        except Exception:
+            pass
+
 
     def _on_cursor_move(self, event=None):
         self.update_cursor_position()
 
     def _on_modified(self, event=None):
-        self.editor.edit_modified(False)
+        try:
+            self.editor.edit_modified(False)
+        except Exception:
+            pass
+        # Ignore during undo/redo apply
+        if getattr(self, "_suspend_undo", False):
+            return
         self.update_line_numbers()
+
 
     def toggle_mode(self):
         self.gui_mode = not self.gui_mode
@@ -2584,6 +3458,10 @@ class VertexIDE:
             'Exit.\n'
         )
         self.editor.insert("1.0", template)
+        self._undo_stack.clear()
+        self._redo_stack.clear()
+        self._last_snapshot = self.editor.get("1.0", "end-1c")
+        self._mark_dirty(False)
         self.root.title(f"{APP_NAME} v{APP_VERSION} - Untitled")
         self.gui_mode = True
         self.config["gui_app"] = True
@@ -2595,6 +3473,7 @@ class VertexIDE:
         self.root.after(30, lambda: highlight(self.editor))
         self.update_line_numbers()
         self.status("New file (Import vcl.vtx)")
+        self.root.after(100, self._update_code_explorer)
 
     def open_file(self):
         path = filedialog.askopenfilename(filetypes=[("Vertex files", "*.vtx"), ("All files", "*.*")])
@@ -2608,6 +3487,10 @@ class VertexIDE:
                 content = f.read()
             self.editor.delete("1.0", tk.END)
             self.editor.insert("1.0", content)
+            self._undo_stack.clear()
+            self._redo_stack.clear()
+            self._last_snapshot = content
+            self._mark_dirty(False)
             self.current_file = path
             self.root.title(f"{APP_NAME} v{APP_VERSION} - {os.path.basename(path)}")
             if self.config.get("auto_detect_gui", True) and looks_like_gui(content):
@@ -2619,9 +3502,11 @@ class VertexIDE:
             self._update_ui_mode()
             self.root.after(30, lambda: highlight(self.editor))
             self.update_line_numbers()
+            self.root.after(60, self._update_code_explorer)
             self.status(f"Loaded {os.path.basename(path)}")
             if self.config.get("auto_detect_gui", True) and looks_like_gui(content):
                 self.root.after(300, self.sync_from_code)
+            self.root.after(100, self._update_code_explorer)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -2642,7 +3527,8 @@ class VertexIDE:
             with open(path, "w", encoding="utf-8") as f:
                 f.write(self.editor.get("1.0", "end-1c"))
             self.current_file = path
-            self.root.title(f"{APP_NAME} v{APP_VERSION} - {os.path.basename(path)}")
+            self._last_snapshot = self.editor.get("1.0", "end-1c")
+            self._mark_dirty(False)
             self.status(f"Saved {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
@@ -2945,50 +3831,122 @@ class VertexIDE:
             entry.delete(0, tk.END)
             entry.insert(0, path)
 
-
-    # ---------- Autocomplete ----------
+    # ---------- Autocomplete (word + member after . / ^.) ----------
     def _editor_keyrelease_ac(self, event=None):
-        if event and event.keysym in ("Return", "Tab", "Escape", "Up", "Down", "Left", "Right"):
-            if event.keysym == "Escape":
-                self._hide_completion()
+        if event is None:
+            self.root.after(30, self._show_completion)
             return
+        if event.keysym == "Escape":
+            self._hide_completion()
+            return
+        if event.keysym in ("Return", "Tab"):
+            try:
+                if getattr(self, "_ac_win", None) and self._ac_win.winfo_viewable():
+                    self._accept_completion()
+                    return "break"
+            except Exception:
+                pass
+            self._hide_completion()
+            return
+        if event.keysym in ("Up", "Down"):
+            try:
+                if getattr(self, "_ac_win", None) and self._ac_win.winfo_viewable():
+                    lb = self._ac_list
+                    cur = lb.curselection()
+                    idx = cur[0] if cur else 0
+                    if event.keysym == "Down":
+                        idx = min(idx + 1, max(lb.size() - 1, 0))
+                    else:
+                        idx = max(idx - 1, 0)
+                    lb.selection_clear(0, tk.END)
+                    lb.selection_set(idx)
+                    lb.see(idx)
+                    return "break"
+            except Exception:
+                pass
         self.root.after(40, self._show_completion)
 
-    def _current_word(self):
+    def _completion_context(self):
+        """Return (mode, prefix): mode is 'word' or 'member'."""
         try:
             idx = self.editor.index("insert")
-            line_start = self.editor.index(f"{idx} linestart")
+            line_start = self.editor.index("%s linestart" % idx)
             prefix = self.editor.get(line_start, idx)
             i = len(prefix) - 1
             while i >= 0 and (prefix[i].isalnum() or prefix[i] == "_"):
                 i -= 1
-            return prefix[i + 1 :]
+            word = prefix[i + 1:]
+            if i >= 0 and prefix[i] == ".":
+                return "member", word
+            if i >= 1 and prefix[i - 1:i + 1] == "^.":
+                return "member", word
+            return "word", word
         except Exception:
-            return ""
+            return "word", ""
+
+    def _scan_buffer_symbols(self):
+        try:
+            src = self.editor.get("1.0", "end-1c")
+            found = set(re.findall(r"\b([A-Za-z_][A-Za-z0-9_]{1,40})\b", src))
+            return sorted(found)
+        except Exception:
+            return []
 
     def _show_completion(self):
-        word = self._current_word()
-        if len(word) < 2:
-            self._hide_completion()
-            return
-        low = word.lower()
-        matches = [c for c in COMPLETIONS if c.lower().startswith(low) and c.lower() != low]
+        mode, word = self._completion_context()
+        low = (word or "").lower()
+        matches = []
+        if mode == "member":
+            pool = list(MEMBER_COMPLETIONS) + self._scan_buffer_symbols()
+            if low:
+                matches = [c for c in pool if c.lower().startswith(low) and c.lower() != low]
+            else:
+                matches = list(MEMBER_COMPLETIONS)
+            matches = sorted(set(matches), key=str.lower)[:16]
+        else:
+            if len(word) < 2:
+                self._hide_completion()
+                return
+            pool = list(COMPLETIONS) + self._scan_buffer_symbols()
+            matches = [c for c in sorted(set(pool), key=str.lower)
+                       if c.lower().startswith(low) and c.lower() != low][:12]
         if not matches:
             self._hide_completion()
             return
-        matches = matches[:12]
+        theme = THEMES[self.current_theme]
         if not hasattr(self, "_ac_win") or self._ac_win is None:
             self._ac_win = tk.Toplevel(self.root)
             self._ac_win.wm_overrideredirect(True)
-            self._ac_list = tk.Listbox(self._ac_win, height=8, font=("Consolas", 10),
-                                      activestyle="dotbox", exportselection=False)
+            border = theme.get("ac_border", theme.get("splash_fg", "#007acc"))
+            self._ac_win.configure(bg=border)
+            frame = tk.Frame(self._ac_win, bg=border, padx=1, pady=1)
+            frame.pack(fill=tk.BOTH, expand=True)
+            self._ac_list = tk.Listbox(
+                frame, height=min(10, max(4, len(matches))), font=("Consolas", 11),
+                activestyle="dotbox", exportselection=False,
+                bg=theme.get("ac_bg", theme["btn_bg"]),
+                fg=theme.get("ac_fg", theme["btn_fg"]),
+                selectbackground=theme.get("ac_sel", theme["select_bg"]),
+                selectforeground="#ffffff",
+                relief=tk.FLAT, highlightthickness=0,
+            )
             self._ac_list.pack()
             self._ac_list.bind("<Double-Button-1>", self._accept_completion)
             self._ac_list.bind("<Return>", self._accept_completion)
             self._ac_list.bind("<Escape>", lambda e: self._hide_completion())
+        else:
+            try:
+                self._ac_list.configure(
+                    bg=theme.get("ac_bg", theme["btn_bg"]),
+                    fg=theme.get("ac_fg", theme["btn_fg"]),
+                    selectbackground=theme.get("ac_sel", theme["select_bg"]),
+                    height=min(10, max(4, len(matches))),
+                )
+            except Exception:
+                pass
         self._ac_list.delete(0, tk.END)
-        for m in matches:
-            self._ac_list.insert(tk.END, m)
+        for mitem in matches:
+            self._ac_list.insert(tk.END, mitem)
         self._ac_list.selection_set(0)
         try:
             bbox = self.editor.bbox("insert")
@@ -2997,8 +3955,8 @@ class VertexIDE:
                 return
             x, y, w, h = bbox
             abs_x = self.editor.winfo_rootx() + x
-            abs_y = self.editor.winfo_rooty() + y + h
-            self._ac_win.geometry(f"+{abs_x}+{abs_y}")
+            abs_y = self.editor.winfo_rooty() + y + h + 2
+            self._ac_win.geometry("+%d+%d" % (abs_x, abs_y))
             self._ac_win.deiconify()
             self._ac_win.lift()
         except Exception:
@@ -3019,15 +3977,33 @@ class VertexIDE:
             self._hide_completion()
             return
         choice = self._ac_list.get(sel[0])
-        word = self._current_word()
+        mode, word = self._completion_context()
+        idx = self.editor.index("insert")
         if word:
-            idx = self.editor.index("insert")
-            start = self.editor.index(f"{idx} - {len(word)}c")
+            start = self.editor.index("%s - %dc" % (idx, len(word)))
             self.editor.delete(start, idx)
             self.editor.insert(start, choice)
+        else:
+            self.editor.insert(idx, choice)
         self._hide_completion()
         self.root.after(10, lambda: highlight(self.editor))
 
+    # ---------- New save-on-close handler ----------
+    def _on_close(self):
+        """Prompt to save if there are unsaved changes (* in title / dirty flag)."""
+        if self._dirty or (hasattr(self, "editor") and self.editor.edit_modified()):
+            name = os.path.basename(self.current_file) if self.current_file else "Untitled"
+            response = messagebox.askyesnocancel(
+                "Save changes?",
+                f'"{name}" has unsaved changes.\n\nDo you want to save before closing?'
+            )
+            if response is None:
+                return  # Cancel — keep IDE open
+            if response:
+                self.save_file()
+                if self._dirty:
+                    return  # save cancelled or failed
+        self.root.destroy()
 
     def status(self, msg):
         if hasattr(self, "status_label"):
@@ -3054,10 +4030,42 @@ class VertexIDE:
         except Exception as e:
             messagebox.showerror("Documentation", f"Could not open documentation.pdf:\n{e}")
 
+    def show_shortcuts(self):
+        shortcuts = """
+Keyboard Shortcuts:
+
+File:
+  Ctrl+N   New file
+  Ctrl+O   Open file
+  Ctrl+S   Save file
+
+Edit:
+  Ctrl+Z   Undo
+  Ctrl+Y   Redo
+  Ctrl+X   Cut
+  Ctrl+C   Copy
+  Ctrl+V   Paste
+  Ctrl+A   Select All
+
+Build & Run:
+  F5       Compile
+  F6       Run
+
+Form Designer:
+  Delete   Delete selected control
+  Double-click a control to create an event handler
+  Click form to select it (properties appear)
+
+Code Explorer:
+  Double-click any symbol to jump to its definition
+        """
+        messagebox.showinfo("Keyboard Shortcuts", shortcuts.strip())
+
     def about(self):
         messagebox.showinfo(
             f"About {APP_NAME}",
-            f"{APP_NAME}  -  Delphi-inspired form designer\n\n"
+            f"{APP_NAME}  -  Delphi-inspired form designer\n"
+            "Author: Smail Lotmani\n\n"
             "Features:\n"
             "  - Form Designer and Component Palette\n"
             "  - VCL code generation (Button, Edit, Label, ...)\n"
