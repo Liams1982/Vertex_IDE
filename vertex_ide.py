@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-# vertex_ide.py - Vertex IDE v1.2 (Delphi-style form designer)
+# vertex_ide.py - Vertex IDE v1.2 (Patched for PyScripter compatibility)
 # Scrollable palette + realistic SevenSeg designer preview + SetSevenSegDigits/Color
 # Uses external VCL file (vcl.vtx) via Import.
 
@@ -171,7 +171,7 @@ PALETTE = [
     ("statusbar", "StatusBar", 200, 24, "Ready", "📶"),
     ("hyperterm", "HyperTerm", 280, 140, "", "💻"),
     ("timer", "Timer", 90, 28, "1000ms", "⏱"),
-    ("sevenseg", "SevenSeg", 140, 64, "0", "🔢"),
+    ("sevenseg", "SevenSeg", 70, 90, "0", "🔢"),
 ]
 
 # Per-control property & event catalog (for Events tab)
@@ -462,39 +462,61 @@ THEMES = {
 }
 
 
-def bind_button_hover(btn, theme):
-    """Subtle color shift on mouse enter/leave for flat buttons."""
-    normal_bg = theme.get("btn_bg", "#3e3e42")
-    normal_fg = theme.get("btn_fg", "#ffffff")
-    hover_bg = theme.get("btn_hover", theme.get("btn_active", "#505054"))
-    hover_fg = theme.get("btn_hover_fg", normal_fg)
-    active_bg = theme.get("btn_active", hover_bg)
+def bind_button_hover(btn, theme, normal_bg=None, normal_fg=None, hover_bg=None, hover_fg=None):
+    """Hover feedback; always restores this button's own colors (no sticky highlight)."""
+    nb = normal_bg if normal_bg is not None else theme.get("btn_bg", "#3e3e42")
+    nf = normal_fg if normal_fg is not None else theme.get("btn_fg", "#ffffff")
+    hb = hover_bg if hover_bg is not None else theme.get("btn_hover", theme.get("btn_active", "#505054"))
+    hf = hover_fg if hover_fg is not None else theme.get("btn_hover_fg", nf)
+    # slightly darker press
+    def _shade(hex_color, factor=0.85):
+        try:
+            h = hex_color.lstrip("#")
+            r, g, b = int(h[0:2], 16), int(h[2:4], 16), int(h[4:6], 16)
+            r, g, b = int(r * factor), int(g * factor), int(b * factor)
+            return f"#{r:02x}{g:02x}{b:02x}"
+        except Exception:
+            return hex_color
+    ab = _shade(hb, 0.8)
+    btn._v_normal_bg = nb
+    btn._v_normal_fg = nf
+    btn._v_hover_bg = hb
+    btn._v_hover_fg = hf
 
-    def on_enter(e, b=btn, hb=hover_bg, hf=hover_fg):
+    def on_enter(e, b=btn):
         try:
             if str(b.cget("state")) == "disabled":
                 return
-            b.configure(bg=hb, fg=hf)
+            b.configure(bg=b._v_hover_bg, fg=b._v_hover_fg, relief=tk.FLAT)
         except Exception:
             pass
 
-    def on_leave(e, b=btn, nb=normal_bg, nf=normal_fg):
+    def on_leave(e, b=btn):
         try:
-            b.configure(bg=nb, fg=nf)
+            b.configure(bg=b._v_normal_bg, fg=b._v_normal_fg, relief=tk.FLAT)
         except Exception:
             pass
 
-    def on_press(e, b=btn, ab=active_bg):
+    def on_press(e, b=btn, pbg=ab):
         try:
-            b.configure(bg=ab)
+            b.configure(bg=pbg)
         except Exception:
             pass
 
-    def on_release(e, b=btn, hb=hover_bg, hf=hover_fg):
+    def on_release(e, b=btn):
         try:
-            b.configure(bg=hb, fg=hf)
+            # pointer still over button?
+            x, y = b.winfo_pointerxy()
+            wx, wy = b.winfo_rootx(), b.winfo_rooty()
+            if wx <= x <= wx + b.winfo_width() and wy <= y <= wy + b.winfo_height():
+                b.configure(bg=b._v_hover_bg, fg=b._v_hover_fg)
+            else:
+                b.configure(bg=b._v_normal_bg, fg=b._v_normal_fg)
         except Exception:
-            pass
+            try:
+                b.configure(bg=b._v_normal_bg, fg=b._v_normal_fg)
+            except Exception:
+                pass
 
     btn.bind("<Enter>", on_enter)
     btn.bind("<Leave>", on_leave)
@@ -502,6 +524,38 @@ def bind_button_hover(btn, theme):
     btn.bind("<ButtonRelease-1>", on_release)
 
 # ---------- Helpers ----------
+def is_frozen():
+    """True when running as PyInstaller / cx_Freeze / etc. packaged EXE."""
+    return bool(getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"))
+
+def app_dir():
+    """Directory of the running app (EXE folder when frozen, else script dir)."""
+    if is_frozen():
+        return os.path.dirname(os.path.abspath(sys.executable))
+    try:
+        return os.path.dirname(os.path.abspath(__file__))
+    except NameError:
+        return os.path.dirname(os.path.abspath(sys.argv[0]))
+
+def find_python_interpreter():
+    """Real Python for running .py helpers. Never return the frozen IDE EXE."""
+    if not is_frozen():
+        return sys.executable
+    import shutil
+    for name in ("python", "python3", "py"):
+        found = shutil.which(name)
+        if found:
+            # avoid pointing back at ourselves
+            try:
+                if os.path.samefile(found, sys.executable):
+                    continue
+            except Exception:
+                if os.path.abspath(found) == os.path.abspath(sys.executable):
+                    continue
+            return found
+    return None
+
+
 def highlight(text_widget):
     end_pos = text_widget.index(tk.END)
     for tag in ("keyword", "flow", "type", "string", "comment", "commentline", "number"):
@@ -624,18 +678,44 @@ def find_executable(exe_name: str, source_file: str, output_dir: str):
 # ---------- DesignControl ----------
 class DesignControl:
     _counter = 0
-    def __init__(self, ctype, x, y, w, h, caption="", color=""):
+    def __init__(self, ctype, x, y, w, h, caption="", color="", text_color="", enabled=True, visible=True):
         DesignControl._counter += 1
         self.ctype = ctype
         self.name = f"{ctype}{DesignControl._counter}"
         self.x, self.y, self.w, self.h = x, y, w, h
         self.caption = caption if caption is not None else ""
-        self.color = color if color is not None else ""
+        self.color = color if color is not None else ""          # background / SetBackColor
+        self.text_color = text_color if text_color is not None else ""  # SetCtrlTextColor
+        self.enabled = bool(enabled)
+        self.visible = bool(visible)
         self.widget = None
         self.selected = False
 
     def to_vtf(self):
         return f"{self.name}:{self.ctype}:{self.x}:{self.y}:{self.w}:{self.h}:{self.caption}:{self.color}"
+
+    def to_dict(self):
+        d = {
+            "name": self.name,
+            "type": self.ctype,
+            "left": int(self.x),
+            "top": int(self.y),
+            "width": int(self.w),
+            "height": int(self.h),
+            "caption": self.caption or "",
+            "color": self.color or "",
+            "text_color": getattr(self, "text_color", "") or "",
+            "enabled": bool(getattr(self, "enabled", True)),
+            "visible": bool(getattr(self, "visible", True)),
+        }
+        # also emit RGB triples when possible (portable for other tools)
+        rgb = color_rgb_from_stored(d["color"]) if d["color"] else None
+        if rgb:
+            d["color_rgb"] = list(rgb)
+        trgb = color_rgb_from_stored(d["text_color"]) if d["text_color"] else None
+        if trgb:
+            d["text_color_rgb"] = list(trgb)
+        return d
 
     @staticmethod
     def from_vtf(line):
@@ -646,6 +726,39 @@ class DesignControl:
         color = parts[7] if len(parts) > 7 else ""
         ctrl = DesignControl(ctype, int(x), int(y), int(w), int(h), caption, color)
         ctrl.name = name
+        return ctrl
+
+    @staticmethod
+    def from_dict(d):
+        ctype = d.get("type") or d.get("ctype") or "label"
+        color = d.get("color", "") or ""
+        if not color and d.get("color_rgb"):
+            try:
+                r, g, b = d["color_rgb"]
+                color = color_hex_from_rgb(int(r), int(g), int(b))
+            except Exception:
+                color = ""
+        text_color = d.get("text_color", "") or ""
+        if not text_color and d.get("text_color_rgb"):
+            try:
+                r, g, b = d["text_color_rgb"]
+                text_color = color_hex_from_rgb(int(r), int(g), int(b))
+            except Exception:
+                text_color = ""
+        ctrl = DesignControl(
+            ctype,
+            int(d.get("left", d.get("x", 0))),
+            int(d.get("top", d.get("y", 0))),
+            int(d.get("width", d.get("w", 80))),
+            int(d.get("height", d.get("h", 28))),
+            d.get("caption", ""),
+            color,
+            text_color,
+            d.get("enabled", True),
+            d.get("visible", True),
+        )
+        if d.get("name"):
+            ctrl.name = d["name"]
         return ctrl
 
 # ---------- SplashScreen ----------
@@ -739,6 +852,7 @@ class VertexIDE:
         self._redo_stack = []
         self._undo_max = 10
         self._dirty = False
+        self.current_vform_path = None  # Delphi-style .vform next to .vtx
         self._last_snapshot = None     # text before last key change
         self._suspend_undo = False     # skip push during undo/redo apply
         self.toolbar_buttons = []
@@ -750,6 +864,8 @@ class VertexIDE:
         self.form_color = ""
         self.form_width = 480
         self.form_height = 320
+        self.form_left = 120
+        self.form_top = 100
         self._drag = None
         self._resize = None
         self._form_resize = None
@@ -830,7 +946,10 @@ class VertexIDE:
         # ---------- Form menu ----------
         form_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
         form_menu.add_command(label="New Form", command=self.new_form)
-        form_menu.add_command(label="Generate VCL Code", command=lambda: self.generate_vcl_code(switch_to_code=True))
+        form_menu.add_command(label="Save Form (.vform)", command=self.save_vform)
+        form_menu.add_command(label="Open Form (.vform)", command=self.open_vform)
+        form_menu.add_separator()
+        # Generate removed — layout lives in .vform + live designer→code sync
         form_menu.add_command(label="Clear Form", command=self.clear_form)
         form_menu.add_command(label="Sync from Code", command=self.sync_from_code)
         menubar.add_cascade(label="Form", menu=form_menu)
@@ -1133,7 +1252,6 @@ class VertexIDE:
         # Action buttons (always visible)
         for _txt, _cmd in (
             ("🗔 New Form", self.new_form),
-            ("⚙ Generate Code", lambda: self.generate_vcl_code(switch_to_code=True)),
             ("🗑 Clear Form", self.clear_form),
         ):
             _b = tk.Button(self.palette, text=_txt, command=_cmd,
@@ -1860,7 +1978,7 @@ class VertexIDE:
         auto = self.config.get("auto_detect_gui", True)
         use_gui = self.gui_mode if not auto else (self.gui_mode or looks_like_gui(source))
         if hasattr(self,"mode_btn"):
-            self.mode_btn.config(text="GUI" if use_gui else "Console")
+            self.mode_btn.config(text=("🖥  GUI" if use_gui else "💻  Console"), relief=tk.FLAT)
         if hasattr(self,"notebook") and hasattr(self,"design_tab_index"):
             if use_gui:
                 self.notebook.tab(self.design_tab_index, state="normal")
@@ -1875,40 +1993,53 @@ class VertexIDE:
         for w in self.toolbar.winfo_children():
             w.destroy()
         self.toolbar_buttons.clear()
-        style = dict(bg=theme["btn_bg"], fg=theme["btn_fg"], activebackground=theme["btn_active"],
-                     relief=tk.FLAT, borderwidth=0, padx=10, pady=5, font=("Segoe UI",9), cursor="hand2")
-        def add(text, cmd, tip=None):
-            b = tk.Button(self.toolbar, text=text, command=cmd, **style)
-            b.pack(side=tk.LEFT, padx=2, pady=4)
+        # Colored pill-style actions (Tk approx. rounded via padx/pady + flat relief)
+        # (label, command, tip, bg, fg, hover_bg)
+        dark = theme.get("bg", "#1e1e2e").lower() in ("#1e1e2e", "#272822") or theme.get("name") == "dark"
+        specs = [
+            ("⚙️  Compile", self.compile_file, "Compile (F5)", "#2563eb", "#ffffff", "#3b82f6"),
+            ("▶️  Run", self.run_program, "Run (F6)", "#059669", "#ffffff", "#10b981"),
+            ("📁  Folder", self.show_folder, "Open output folder", "#4b5563", "#ffffff", "#6b7280"),
+            None,  # separator
+            ("📄  New", self.new_file, "New file (Ctrl+N)", "#7c3aed", "#ffffff", "#8b5cf6"),
+            ("📂  Open", self.open_file, "Open file (Ctrl+O)", "#0d9488", "#ffffff", "#14b8a6"),
+            ("💾  Save", self.save_file, "Save (Ctrl+S)", "#d97706", "#ffffff", "#f59e0b"),
+            None,
+            ("🗔  Form", self.new_form, "New blank form + .vform", "#db2777", "#ffffff", "#ec4899"),
+            ("🔄  Sync", self.sync_from_code, "Reload designer from code / .vform", "#6366f1", "#ffffff", "#818cf8"),
+            None,
+            ("mode", None, "Toggle GUI / Console", "#334155", "#f8fafc", "#475569"),
+        ]
+        for spec in specs:
+            if spec is None:
+                tk.Frame(self.toolbar, width=8, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
+                continue
+            label, cmd, tip, bg, fg, hbg = spec
+            if label == "mode":
+                label = "🖥  GUI" if self.gui_mode else "💻  Console"
+                cmd = self.toggle_mode
+            b = tk.Button(
+                self.toolbar, text=label, command=cmd,
+                bg=bg, fg=fg, activebackground=hbg, activeforeground=fg,
+                relief=tk.FLAT, borderwidth=0, padx=12, pady=6,
+                font=("Segoe UI", 9, "bold"), cursor="hand2",
+                highlightthickness=1, highlightbackground=bg, highlightcolor=hbg,
+            )
+            b.pack(side=tk.LEFT, padx=3, pady=5)
+            # Soft "rounded" look: extra internal padding + matching highlight
+            bind_button_hover(b, theme, normal_bg=bg, normal_fg=fg, hover_bg=hbg, hover_fg=fg)
             self.toolbar_buttons.append(b)
-            bind_button_hover(b, theme)
             if tip:
-                # status tip on enter — chain after hover leave restores colors
-                def _st_enter(e, t=tip, btn=b):
+                def _st_enter(e, t=tip):
                     self.status(t)
                 def _st_leave(e):
                     self.status("Ready")
                 b.bind("<Enter>", _st_enter, add="+")
                 b.bind("<Leave>", _st_leave, add="+")
                 ToolTip(b, tip)
-            return b
+            if label.startswith("🖥") or label.startswith("💻") or "GUI" in label or "Console" in label:
+                self.mode_btn = b
 
-        add("⚙️  Compile", self.compile_file, "Compile (F5)")
-        add("▶️  Run", self.run_program, "Run (F6)")
-        add("📁  Folder", self.show_folder, "Open output folder")
-        tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        add("📄  New", self.new_file, "New file (Ctrl+N)")
-        add("📂  Open", self.open_file, "Open file (Ctrl+O)")
-        add("💾  Save", self.save_file, "Save (Ctrl+S)")
-        tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        add("🗔  Form", self.new_form, "Create a blank form")
-        add("⚡  Gen", lambda: self.generate_vcl_code(switch_to_code=True), "Generate Vertex VCL from form")
-        add("🔄  Sync", self.sync_from_code, "Sync form from code")
-        tk.Frame(self.toolbar, width=6, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
-        self.mode_btn = add(("🖥  GUI" if self.gui_mode else "💻  Console"), self.toggle_mode,
-                            "Toggle GUI / Console")
-        tk.Label(self.toolbar, text=f" {self.current_theme.capitalize()} ",
-                 bg=theme["toolbar_bg"], fg=theme["line_fg"], font=("Segoe UI",8)).pack(side=tk.RIGHT, padx=6)
 
     def _configure_tags(self, theme):
         self.editor.tag_config("keyword", foreground=theme["keyword"]["fg"],
@@ -2033,7 +2164,8 @@ class VertexIDE:
                 if hasattr(self, "_update_timer") and self._update_timer:
                     self.root.after_cancel(self._update_timer)
                     self._update_timer = None
-                self._update_code_for_property(ctrl, "left", ctrl.x)
+                self._update_code_for_control(ctrl)
+                self._schedule_live_code_sync()
 
     # ---------- Form resize handles ----------
     def _draw_form_handles(self):
@@ -2093,6 +2225,183 @@ class VertexIDE:
                 b.config(bg=theme["btn_bg"], fg=theme["btn_fg"])
         self.status(f"Tool: {ctype}")
 
+
+    # ---------- .vform (Delphi-style form resource, JSON) ----------
+    def _vform_path_for_unit(self, vtx_path=None):
+        """Unit1.vtx -> Unit1.vform (same folder)."""
+        path = vtx_path or self.current_file
+        if not path:
+            return None
+        base, _ = os.path.splitext(path)
+        return base + ".vform"
+
+    def form_to_document(self):
+        """Serialize designer to a Delphi-DFM-like JSON document (all visual properties)."""
+        # Always pull latest size from the designer fields if present
+        try:
+            if hasattr(self, "form_w_var"):
+                self.form_width = max(100, int(self.form_w_var.get() or self.form_width))
+            if hasattr(self, "form_h_var"):
+                self.form_height = max(80, int(self.form_h_var.get() or self.form_height))
+        except Exception:
+            pass
+        try:
+            if hasattr(self, "form_title_var") and self.form_title_var.get().strip():
+                self.form_title = self.form_title_var.get().strip()
+        except Exception:
+            pass
+        form_color = self.form_color or ""
+        form_rgb = color_rgb_from_stored(form_color) if form_color else None
+        left = int(getattr(self, "form_left", 120) or 120)
+        top = int(getattr(self, "form_top", 100) or 100)
+        width = int(self.form_width)
+        height = int(self.form_height)
+        form_block = {
+            "name": self.form_title or "Form1",
+            "caption": self.form_title or "Form1",
+            "left": left,
+            "top": top,
+            "width": width,
+            "height": height,
+            "client_width": width,
+            "client_height": height,
+            "color": form_color,
+        }
+        if form_rgb:
+            form_block["color_rgb"] = list(form_rgb)
+        return {
+            "format": "VertexForm",
+            "version": 2,
+            "unit": os.path.splitext(os.path.basename(self.current_file or "Form1.vtx"))[0],
+            # Explicit form dimensions (also nested under "form" for compatibility)
+            "width": width,
+            "height": height,
+            "left": left,
+            "top": top,
+            "form": form_block,
+            "controls": [c.to_dict() for c in self.design_controls],
+        }
+
+    def form_from_document(self, doc):
+        """Load designer state from a .vform document."""
+        if not isinstance(doc, dict):
+            raise ValueError("Invalid .vform document")
+        form = doc.get("form") or {}
+        self.form_title = form.get("caption") or form.get("name") or self.form_title or "Form1"
+        # Prefer form.* then top-level width/height
+        self.form_width = int(
+            form.get("width") or form.get("client_width") or doc.get("width") or self.form_width or 480
+        )
+        self.form_height = int(
+            form.get("height") or form.get("client_height") or doc.get("height") or self.form_height or 320
+        )
+        self.form_left = int(form.get("left") or doc.get("left") or getattr(self, "form_left", 120) or 120)
+        self.form_top = int(form.get("top") or doc.get("top") or getattr(self, "form_top", 100) or 100)
+        self.form_color = form.get("color") or ""
+        if hasattr(self, "form_title_var"):
+            self.form_title_var.set(self.form_title)
+        if hasattr(self, "form_w_var"):
+            self.form_w_var.set(str(self.form_width))
+            self.form_h_var.set(str(self.form_height))
+        if hasattr(self, "form_canvas"):
+            self.form_canvas.config(width=self.form_width, height=self.form_height)
+            try:
+                if self.form_color:
+                    self.form_canvas.config(bg=self.form_color)
+            except Exception:
+                pass
+        self.design_controls.clear()
+        self.selected_control = None
+        DesignControl._counter = 0
+        for item in doc.get("controls") or []:
+            try:
+                ctrl = DesignControl.from_dict(item)
+                self.design_controls.append(ctrl)
+                DesignControl._counter = max(
+                    DesignControl._counter,
+                    int("".join(ch for ch in ctrl.name if ch.isdigit()) or "0")
+                )
+            except Exception:
+                continue
+        self._redraw_all()
+
+    def save_vform(self, path=None, silent=False):
+        """Write layout to .vform (JSON). Like saving a Delphi .dfm."""
+        path = path or self.current_vform_path or self._vform_path_for_unit()
+        if not path:
+            path = filedialog.asksaveasfilename(
+                defaultextension=".vform",
+                filetypes=[("Vertex Form", "*.vform"), ("JSON", "*.json"), ("All", "*.*")],
+                title="Save Form (.vform)",
+            )
+            if not path:
+                return False
+        try:
+            doc = self.form_to_document()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=2)
+            self.current_vform_path = path
+            # Ensure unit references the form file (comment + convention)
+            self._ensure_vform_import_comment(path)
+            if not silent:
+                self.status(f"Form saved: {os.path.basename(path)}")
+            return True
+        except Exception as e:
+            if not silent:
+                messagebox.showerror("Save Form", str(e))
+            return False
+
+    def open_vform(self, path=None):
+        """Load a .vform into the designer."""
+        if not path:
+            path = filedialog.askopenfilename(
+                filetypes=[("Vertex Form", "*.vform"), ("JSON", "*.json"), ("All", "*.*")],
+                title="Open Form (.vform)",
+            )
+        if not path or not os.path.isfile(path):
+            return False
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                doc = json.load(f)
+            self.form_from_document(doc)
+            self.current_vform_path = path
+            self.status(f"Form loaded: {os.path.basename(path)}")
+            self._schedule_live_code_sync()
+            return True
+        except Exception as e:
+            messagebox.showerror("Open Form", str(e))
+            return False
+
+    def _ensure_vform_import_comment(self, vform_path):
+        """Insert a Delphi-style form link comment near the top of the .vtx unit."""
+        if not hasattr(self, "editor"):
+            return
+        rel = os.path.basename(vform_path)
+        marker = "{$FORM "
+        line = '{$FORM "' + rel + '"}  { layout resource — edit in Form Designer }'
+        source = self.editor.get("1.0", "end-1c")
+        lines = source.splitlines()
+        # update existing
+        for i, ln in enumerate(lines):
+            if "{$FORM" in ln or "$FORM" in ln:
+                lines[i] = line
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", "\n".join(lines))
+                return
+        # insert after first Import or at top
+        insert_at = 0
+        for i, ln in enumerate(lines):
+            if ln.strip().startswith("Import"):
+                insert_at = i + 1
+        lines.insert(insert_at, line)
+        self.editor.delete("1.0", tk.END)
+        self.editor.insert("1.0", "\n".join(lines))
+
+    def _autosave_vform(self):
+        path = self.current_vform_path or self._vform_path_for_unit()
+        if path:
+            self.save_vform(path, silent=True)
+
     def new_form(self):
         self.clear_form()
         self.form_title = "Form1"
@@ -2108,7 +2417,7 @@ class VertexIDE:
         self.config["auto_detect_gui"] = True
         save_config(self.config)
         if hasattr(self,"mode_btn"):
-            self.mode_btn.config(text="GUI")
+            self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
         self._update_ui_mode()
         self.status("New form ready - pick a control, click on the form to place it")
 
@@ -2131,39 +2440,56 @@ class VertexIDE:
             self.prop_vars[k].set("")
 
     def _apply_form_size(self):
-        if self._updating_form_size:
-            return
-        self._updating_form_size = True
         try:
-            try:
-                new_w = max(100, int(self.form_w_var.get()))
-                new_h = max(80, int(self.form_h_var.get()))
-            except ValueError:
-                return
-            new_title = self.form_title_var.get().strip() or "Form1"
-
+            w = int(self.form_w_var.get())
+            h = int(self.form_h_var.get())
+        except Exception:
+            return
+        if w < 100:
+            w = 100
+        if h < 80:
+            h = 80
+        self.form_width, self.form_height = w, h
+        try:
+            title = self.form_title_var.get().strip()
+            if title:
+                self.form_title = title
+        except Exception:
+            pass
+        try:
+            self.form_canvas.config(width=w, height=h)
+        except Exception:
+            pass
+        self._redraw_all()
+        # Persist dimensions into .vtx Window(...) and .vform
+        try:
+            left = int(getattr(self, "form_left", 120) or 120)
+            top = int(getattr(self, "form_top", 100) or 100)
+            source = self.editor.get("1.0", "end-1c")
+            lines = source.splitlines()
             changed = False
-
-            if new_title != self.form_title:
-                self.form_title = new_title
-                self._update_form_code("title", new_title)
-                changed = True
-
-            if new_w != self.form_width or new_h != self.form_height:
-                self.form_width = new_w
-                self.form_height = new_h
-                self.form_canvas.config(width=self.form_width, height=self.form_height)
-                self._update_form_code("size", None)
-                changed = True
-
-            if self.selected_form:
-                self._load_form_props()
-
-            self._redraw_all()
+            for i, line in enumerate(lines):
+                if re.match(r'^\s*Window\s*\(', line):
+                    indent = re.match(r'^(\s*)', line).group(1)
+                    lines[i] = f"{indent}Window({w}, {h}, {left}, {top});"
+                    changed = True
+                if re.match(r'^\s*SetWindowTitle\s*\(', line):
+                    indent = re.match(r'^(\s*)', line).group(1)
+                    lines[i] = f'{indent}SetWindowTitle("{self.form_title}");'
+                    changed = True
             if changed:
-                self.status("Form properties updated")
-        finally:
-            self._updating_form_size = False
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", "\n".join(lines))
+                self.root.after(20, lambda: highlight(self.editor))
+                self.update_line_numbers()
+                try:
+                    self._mark_dirty(True)
+                except Exception:
+                    pass
+            self._autosave_vform()
+        except Exception:
+            pass
+
 
     def _form_click(self, event):
         items = self.form_canvas.find_overlapping(event.x-5, event.y-5, event.x+5, event.y+5)
@@ -2203,13 +2529,21 @@ class VertexIDE:
         _, _, dw, dh, cap, _ = meta
         x = max(0, min(event.x, self.form_width-dw))
         y = max(0, min(event.y, self.form_height-dh))
+        if tool == "sevenseg":
+            dw, dh = 70, 90
+            cap = "0"
+            x = max(0, min(event.x, self.form_width - dw))
+            y = max(0, min(event.y, self.form_height - dh))
         ctrl = DesignControl(tool, x, y, dw, dh, cap)
+        if tool == "sevenseg":
+            ctrl.caption = "0"
         self.design_controls.append(ctrl)
         self._redraw_all()
         self._select_control(ctrl)
         self._select_tool("select")
         self.status(f"Placed {ctrl.name}")
         self._insert_code_for_control(ctrl)
+        self._schedule_live_code_sync()
 
     def _form_drag(self, event):
         if self._resize:
@@ -2233,15 +2567,25 @@ class VertexIDE:
                 self.prop_vars["top"].set(str(ctrl.y))
             if self._update_timer:
                 self.root.after_cancel(self._update_timer)
-            self._update_timer = self.root.after(180, lambda c=ctrl: self._update_code_for_property(c, "left", c.x))
+            self._update_timer = self.root.after(150, lambda c=ctrl: self._update_code_for_control(c))
 
     def _form_release(self, event):
         if hasattr(self, "_update_timer") and self._update_timer:
             self.root.after_cancel(self._update_timer)
             self._update_timer = None
+        dragged = self._drag[0] if self._drag else None
+        resized = self._resize[0] if getattr(self, "_resize", None) else None
         self._resize_release(event)
         self._form_resize_release(event)
         self._drag = None
+        # Live code update after move/resize (no Generate click required)
+        target = dragged or resized
+        if target is not None:
+            try:
+                self._update_code_for_control(target)
+            except Exception:
+                pass
+        self._schedule_live_code_sync()
 
     def _hit_test(self, x, y):
         for c in reversed(self.design_controls):
@@ -2657,6 +3001,14 @@ class VertexIDE:
         if new_name != old_name:
             ctrl.name = new_name
             self._update_code_for_control(ctrl)
+        if ctrl.ctype == "sevenseg":
+            # only one digit 0-9
+            digs = "".join(ch for ch in new_caption if ch.isdigit())
+            if not digs:
+                digs = "0"
+            new_caption = digs[-1]  # single digit 0-9
+            if "caption" in self.prop_vars:
+                self.prop_vars["caption"].set(new_caption)
         if new_caption != old_caption:
             ctrl.caption = new_caption
             self._update_code_for_property(ctrl, "caption", new_caption)
@@ -2669,6 +3021,7 @@ class VertexIDE:
 
         self._redraw_all()
         self.status(f"Updated {ctrl.name}")
+        self._schedule_live_code_sync()
 
     def _delete_selected(self):
         if self.selected_form:
@@ -2687,7 +3040,59 @@ class VertexIDE:
         self._remove_lines_for_control(ctrl.name)
 
     # ---------- Code updates for properties ----------
+    def _schedule_live_code_sync(self):
+        """Debounce: push designer state into source without requiring Generate."""
+        if getattr(self, "_suspend_live_sync", False):
+            return
+        if hasattr(self, "_live_sync_job") and self._live_sync_job:
+            try:
+                self.root.after_cancel(self._live_sync_job)
+            except Exception:
+                pass
+        self._live_sync_job = self.root.after(250, self._live_sync_all_controls)
+
+    def _live_sync_all_controls(self):
+        """Update existing form-section lines for every designer control."""
+        self._live_sync_job = None
+        if getattr(self, "_suspend_live_sync", False):
+            return
+        try:
+            for c in list(self.design_controls):
+                self._update_code_for_control(c)
+            # form size/title
+            self._sync_form_header_to_code()
+            if not getattr(self, "_dirty", False):
+                self._mark_dirty(True)
+            self._autosave_vform()
+        except Exception as e:
+            self.status(f"Live sync: {e}")
+
+    def _sync_form_header_to_code(self):
+        """Patch Window(...) and SetWindowTitle in editor to match designer."""
+        try:
+            source = self.editor.get("1.0", "end-1c")
+            lines = source.splitlines()
+            changed = False
+            for i, line in enumerate(lines):
+                m = re.match(r'^(\s*)Window\s*\(\s*\d+\s*,\s*\d+\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*;', line)
+                if m:
+                    indent, x, y = m.group(1), m.group(2), m.group(3)
+                    lines[i] = f"{indent}Window({self.form_width}, {self.form_height}, {x}, {y});"
+                    changed = True
+                m2 = re.match(r'^(\s*)SetWindowTitle\s*\(\s*"[^"]*"\s*\)\s*;', line)
+                if m2:
+                    lines[i] = f'{m2.group(1)}SetWindowTitle("{self.form_title}");'
+                    changed = True
+            if changed:
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", "\n".join(lines))
+                self.root.after(20, lambda: highlight(self.editor))
+                self.update_line_numbers()
+        except Exception:
+            pass
+
     def _update_code_for_property(self, ctrl, prop, value):
+
         if prop == "name":
             old_name = ctrl.name
             source = self.editor.get("1.0", "end-1c")
@@ -2714,6 +3119,30 @@ class VertexIDE:
             return
 
         if prop == "caption":
+            if ctrl.ctype == "sevenseg":
+                digs = "".join(ch for ch in str(value) if ch.isdigit()) or "0"
+                value = digs[-1]
+                old_pattern = r'^(\s*)SetSevenSeg(?:Digits)?\s*\(\s*' + re.escape(ctrl.name) + r'\s*,\s*\d+'
+                # replace whole SetSevenSeg line
+                source = self.editor.get("1.0", "end-1c")
+                lines = source.splitlines()
+                found = False
+                for i, line in enumerate(lines):
+                    if re.search(r'SetSevenSeg(?:Digits)?\s*\(\s*' + re.escape(ctrl.name) + r'\b', line, re.I):
+                        lines[i] = f'  SetSevenSeg({ctrl.name}, {value});'
+                        found = True
+                        break
+                if found:
+                    self.editor.delete("1.0", tk.END)
+                    self.editor.insert("1.0", "\n".join(lines))
+                    self.root.after(20, lambda: highlight(self.editor))
+                    self.update_line_numbers()
+                elif not self._replace_line_in_code(
+                    r'^(\s*)SetText\s*\(\s*' + re.escape(ctrl.name) + r'\s*,\s*".*?"\s*\)\s*;',
+                    f'  SetSevenSeg({ctrl.name}, {value});', re.IGNORECASE
+                ):
+                    self._insert_lines_in_form_section([f'  SetSevenSeg({ctrl.name}, {value});'])
+                return
             old_pattern = r'^(\s*)SetText\s*\(\s*' + re.escape(ctrl.name) + r'\s*,\s*".*?"\s*\)\s*;'
             new_line = f'  SetText({ctrl.name}, "{value}");'
             if not self._replace_line_in_code(old_pattern, new_line, re.IGNORECASE):
@@ -2814,39 +3243,104 @@ class VertexIDE:
             self._replace_line_in_code(pattern, new_line, re.IGNORECASE)
 
     def _update_code_for_control(self, ctrl):
+        """Write this control's geometry (and caption) into the .vtx source immediately."""
         try:
-            source = self.editor.get("1.0", "end-1c")
-            lines = source.splitlines()
             type_map = {
-                "button": "Button",
-                "edit": "Edit",
-                "label": "Label",
-                "memo": "Memo",
-                "listbox": "ListBox",
-                "combo": "ComboBox",
-                "checkbox": "CheckBox",
-                "radio": "Radio",
-                "groupbox": "GroupBox",
-                "panel": "Panel",
-                "comport": "ComOpen",
+                "button": "Button", "edit": "Edit", "label": "Label", "memo": "Memo",
+                "listbox": "ListBox", "combo": "ComboBox", "checkbox": "CheckBox",
+                "radio": "Radio", "groupbox": "GroupBox", "panel": "Panel",
+                "sevenseg": "SevenSeg", "hyperterm": "HyperTerm", "statusbar": "StatusBar",
             }
             code_type = type_map.get(ctrl.ctype.lower(), ctrl.ctype.capitalize())
+            source = self.editor.get("1.0", "end-1c")
+            lines = source.splitlines()
+            name = re.escape(ctrl.name)
+            # Match: name <- Type(parent, w, h, x, y);
+            pat = re.compile(
+                r'^(\s*)' + name + r'\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel|SevenSeg|HyperTerm)\s*\(\s*\w+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)\s*;',
+                re.IGNORECASE
+            )
+            status_pat = re.compile(
+                r'^(\s*)' + name + r'\s*<-\s*StatusBar\s*\(\s*\w+\s*,\s*\d+\s*\)\s*;',
+                re.IGNORECASE
+            )
+            updated = False
             for i, line in enumerate(lines):
-                if re.search(r'^\s*' + re.escape(ctrl.name) + r'\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel|ComOpen)\s*\(', line, re.IGNORECASE):
-                    new_line = re.sub(
-                        r'(\w+)\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel)\s*\(\s*\w+\s*,\s*)\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)\s*;',
-                        f"{ctrl.name} <- {code_type}(MainWindow, {ctrl.w}, {ctrl.h}, {ctrl.x}, {ctrl.y});",
-                        line,
-                        flags=re.IGNORECASE
-                    )
-                    lines[i] = new_line
+                if pat.match(line):
+                    indent = pat.match(line).group(1)
+                    lines[i] = f"{indent}{ctrl.name} <- {code_type}(MainWindow, {ctrl.w}, {ctrl.h}, {ctrl.x}, {ctrl.y});"
+                    updated = True
                     break
+                if status_pat.match(line):
+                    indent = status_pat.match(line).group(1)
+                    lines[i] = f"{indent}{ctrl.name} <- StatusBar(MainWindow, {ctrl.h});"
+                    updated = True
+                    break
+            if not updated:
+                # Control not in code yet — insert it
+                self._insert_code_for_control(ctrl)
+                return
+            # Update SetSevenSeg / SetText for caption when present
+            if ctrl.ctype == "sevenseg":
+                dig = "".join(ch for ch in (ctrl.caption or "0") if ch.isdigit()) or "0"
+                dig = dig[-1]
+                for i, line in enumerate(lines):
+                    if re.search(r'SetSevenSeg(?:Digits)?\s*\(\s*' + name + r'\b', line, re.I):
+                        lines[i] = f"  SetSevenSeg({ctrl.name}, {dig});"
+                        break
+            elif ctrl.caption is not None and ctrl.ctype not in ("listbox", "combo", "timer", "comport"):
+                for i, line in enumerate(lines):
+                    if re.search(r'SetText\s*\(\s*' + name + r'\s*,', line, re.I):
+                        lines[i] = f'  SetText({ctrl.name}, "{ctrl.caption}");'
+                        break
+
+            if ctrl.color:
+                rgb = color_rgb_from_stored(ctrl.color)
+                if rgb:
+                    r, g, b = rgb
+                    newc = f'  SetBackColor({ctrl.name}, ColorRGB({r}, {g}, {b}));'
+                    found = False
+                    for i, line in enumerate(lines):
+                        if re.search(r'^\s*SetBackColor\s*\(\s*' + name + r'\b', line, re.I):
+                            lines[i] = newc
+                            found = True
+                            break
+                    if not found:
+                        for i, line in enumerate(lines):
+                            if re.search(r'^\s*' + name + r'\s*<-\s*', line):
+                                lines.insert(i + 1, newc)
+                                break
+            tc = getattr(ctrl, "text_color", "") or ""
+            if tc:
+                rgb = color_rgb_from_stored(tc)
+                if rgb:
+                    r, g, b = rgb
+                    newc = f'  SetCtrlTextColor({ctrl.name}, ColorRGB({r}, {g}, {b}));'
+                    found = False
+                    for i, line in enumerate(lines):
+                        if re.search(r'^\s*SetCtrlTextColor\s*\(\s*' + name + r'\b', line, re.I):
+                            lines[i] = newc
+                            found = True
+                            break
+                    if not found:
+                        for i, line in enumerate(lines):
+                            if re.search(r'^\s*' + name + r'\s*<-\s*', line):
+                                lines.insert(i + 1, newc)
+                                break
             self.editor.delete("1.0", tk.END)
             self.editor.insert("1.0", "\n".join(lines))
+            try:
+                self._mark_dirty(True)
+            except Exception:
+                pass
             self.root.after(20, lambda: highlight(self.editor))
             self.update_line_numbers()
-        except Exception:
-            pass
+        except Exception as e:
+            try:
+                self.status(f"Code update failed: {e}")
+            except Exception:
+                pass
+
 
     def _replace_line_in_code(self, old_pattern, new_line, flags=0):
         source = self.editor.get("1.0", "end-1c")
@@ -2878,6 +3372,9 @@ class VertexIDE:
             "radio": "Radio",
             "groupbox": "GroupBox",
             "panel": "Panel",
+            "sevenseg": "SevenSeg",
+            "hyperterm": "HyperTerm",
+            "statusbar": "StatusBar",
         }
         if ctrl.ctype == "comport":
             port = (ctrl.caption or "COM1").split("@")[0].strip() or "COM1"
@@ -2889,13 +3386,26 @@ class VertexIDE:
         else:
             ctype = ctype_map.get(ctrl.ctype, "Label")
             lines.append(f'  {ctrl.name} <- {ctype}(MainWindow, {ctrl.w}, {ctrl.h}, {ctrl.x}, {ctrl.y});')
-            if ctrl.caption and ctrl.ctype not in ("listbox", "combo", "statusbar"):
+            if ctrl.ctype == "sevenseg":
+                dig = "".join(ch for ch in (ctrl.caption or "0") if ch.isdigit()) or "0"
+                lines.append(f'  SetSevenSeg({ctrl.name}, {dig[-1]});')
+            elif ctrl.caption and ctrl.ctype not in ("listbox", "combo", "statusbar", "timer"):
                 lines.append(f'  SetText({ctrl.name}, "{ctrl.caption}");')
             if ctrl.color:
                 rgb = color_rgb_from_stored(ctrl.color)
                 if rgb:
                     r, g, b = rgb
                     lines.append(f'  SetBackColor({ctrl.name}, ColorRGB({r}, {g}, {b}));')
+            tc = getattr(ctrl, "text_color", "") or ""
+            if tc:
+                rgb = color_rgb_from_stored(tc)
+                if rgb:
+                    r, g, b = rgb
+                    lines.append(f'  SetCtrlTextColor({ctrl.name}, ColorRGB({r}, {g}, {b}));')
+            if not getattr(ctrl, "enabled", True):
+                lines.append(f'  DisableCtrl({ctrl.name});')
+            if not getattr(ctrl, "visible", True):
+                lines.append(f'  HideCtrl({ctrl.name});')
         self._ensure_var_decl(ctrl)
         self._insert_lines_in_form_section(lines, before_pattern=r'// --- FORM END ---')
 
@@ -2989,6 +3499,14 @@ class VertexIDE:
 
     # ---------- Sync from code ----------
     def sync_from_code(self):
+        self._suspend_live_sync = True
+        try:
+            self._sync_from_code_impl()
+        finally:
+            self._suspend_live_sync = False
+
+    def _sync_from_code_impl(self):
+
         try:
             if not hasattr(self, "editor") or not hasattr(self, "form_canvas"):
                 return
@@ -2998,7 +3516,7 @@ class VertexIDE:
                 return
 
             pattern = re.compile(
-                r'(\w+)\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel)\s*\(\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*;',
+                r'(\w+)\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel|SevenSeg|HyperTerm)\s*\(\s*(\w+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*;',
                 re.MULTILINE | re.IGNORECASE
             )
             assignments = {}
@@ -3007,11 +3525,13 @@ class VertexIDE:
             type_counts = {
                 "button": 0, "edit": 0, "label": 0, "memo": 0, "checkbox": 0, "radio": 0,
                 "listbox": 0, "combo": 0, "groupbox": 0, "panel": 0, "comport": 0,
+                "sevenseg": 0, "hyperterm": 0, "statusbar": 0, "timer": 0,
             }
             vcl_to_ctype = {
                 "button": "button", "edit": "edit", "label": "label", "memo": "memo",
                 "checkbox": "checkbox", "radio": "radio", "listbox": "listbox",
                 "combobox": "combo", "groupbox": "groupbox", "panel": "panel",
+                "sevenseg": "sevenseg", "hyperterm": "hyperterm",
             }
             for match in pattern.finditer(source):
                 var_name, ctype_raw, parent, w, h, x, y = match.groups()
@@ -3044,12 +3564,36 @@ class VertexIDE:
                 captions[var_name] = f"{port}@{baud}"
                 type_counts["comport"] = type_counts.get("comport", 0) + 1
 
+
+            status_pat = re.compile(
+                r'(\w+)\s*<-\s*StatusBar\s*\(\s*(\w+)\s*,\s*(\d+)\s*\)\s*;',
+                re.MULTILINE | re.IGNORECASE
+            )
+            for match in status_pat.finditer(source):
+                var_name, parent, height = match.groups()
+                try:
+                    hh = int(height)
+                except ValueError:
+                    hh = 24
+                assignments[var_name] = ("statusbar", 0, max(0, self.form_height - hh), self.form_width, hh)
+                captions[var_name] = captions.get(var_name, "Ready")
+                type_counts["statusbar"] = type_counts.get("statusbar", 0) + 1
+
             settext_pattern = re.compile(
                 r'SetText\s*\(\s*(\w+)\s*,\s*"([^"]*)"\s*\)\s*;', re.MULTILINE
             )
             for match in settext_pattern.finditer(source):
                 var, cap = match.groups()
                 captions[var] = cap
+
+            seven_pat = re.compile(
+                r'SetSevenSeg(?:Digits)?\s*\(\s*(\w+)\s*,\s*(\d+)',
+                re.MULTILINE | re.IGNORECASE
+            )
+            for match in seven_pat.finditer(source):
+                var, val = match.groups()
+                dig = val[-1] if val else "0"
+                captions[var] = dig
 
             color_pat = re.compile(
                 r'SetBackColor\s*\(\s*(\w+)\s*,\s*ColorRGB\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*\)\s*;',
@@ -3061,6 +3605,19 @@ class VertexIDE:
                     colors[var] = color_hex_from_rgb(int(r), int(g), int(b))
                 except ValueError:
                     pass
+
+            text_color_pat = re.compile(
+                r'SetCtrlTextColor\s*\(\s*(\w+)\s*,\s*ColorRGB\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)\s*\)\s*;',
+                re.MULTILINE | re.IGNORECASE
+            )
+            text_colors = {}
+            for match in text_color_pat.finditer(source):
+                var, r, g, b = match.groups()
+                try:
+                    text_colors[var] = color_hex_from_rgb(int(r), int(g), int(b))
+                except ValueError:
+                    pass
+
 
             form_color_hex = ""
             form_pat = re.compile(
@@ -3074,13 +3631,21 @@ class VertexIDE:
                 except ValueError:
                     form_color_hex = ""
 
-            win_match = re.search(r'Window\s*\(\s*(\d+)\s*,\s*(\d+)\s*,', source)
+            win_match = re.search(
+                r'Window\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)',
+                source
+            )
+            if not win_match:
+                win_match = re.search(r'Window\s*\(\s*(\d+)\s*,\s*(\d+)\s*,', source)
             if win_match:
                 try:
                     fw, fh = int(win_match.group(1)), int(win_match.group(2))
                     if fw >= 100 and fh >= 80:
                         self.form_width = fw
                         self.form_height = fh
+                        if win_match.lastindex and win_match.lastindex >= 4:
+                            self.form_left = int(win_match.group(3))
+                            self.form_top = int(win_match.group(4))
                         if hasattr(self, "form_w_var"):
                             self.form_w_var.set(str(fw))
                             self.form_h_var.set(str(fh))
@@ -3133,7 +3698,8 @@ class VertexIDE:
             for var_name, (ctype, x, y, w, h) in assignments.items():
                 cap = captions.get(var_name, "")
                 col = colors.get(var_name, "")
-                ctrl = DesignControl(ctype, x, y, w, h, cap, col)
+                tcol = text_colors.get(var_name, "")
+                ctrl = DesignControl(ctype, x, y, w, h, cap, col, tcol)
                 ctrl.name = var_name
                 self.design_controls.append(ctrl)
 
@@ -3163,8 +3729,18 @@ class VertexIDE:
             if not hasattr(self, "notebook"):
                 return
             current = self.notebook.index(self.notebook.select())
+            prev = getattr(self, "_prev_tab_index", None)
+            self._prev_tab_index = current
+
+            # Leaving Form Designer → force-save layout into code + .vform
+            if prev is not None and hasattr(self, "design_tab_index") and prev == self.design_tab_index:
+                if current != self.design_tab_index:
+                    self._flush_designer_to_storage()
+
+            # Entering Form Designer → load .vform if present (authoritative), else code
             if hasattr(self, "design_tab_index") and current == self.design_tab_index:
-                self.root.after(30, self.sync_from_code)
+                self.root.after(40, self._reload_designer_from_storage)
+
             try:
                 tab_text = self.notebook.tab(current, "text")
             except Exception:
@@ -3173,6 +3749,50 @@ class VertexIDE:
                 self.root.after(40, self._update_code_explorer)
         except Exception:
             pass
+
+    def _flush_designer_to_storage(self):
+        """Persist every control's geometry to .vtx and .vform (call before leaving designer)."""
+        try:
+            for c in list(self.design_controls):
+                self._update_code_for_control(c)
+            try:
+                self._sync_form_header_to_code()
+            except Exception:
+                pass
+            path = self.current_vform_path or self._vform_path_for_unit()
+            if path:
+                self.save_vform(path, silent=True)
+            try:
+                self._mark_dirty(True)
+            except Exception:
+                pass
+            self.status("Designer changes saved to code / .vform")
+        except Exception as e:
+            self.status(f"Flush failed: {e}")
+
+    def _reload_designer_from_storage(self):
+        """Prefer .vform layout; fall back to parsing code."""
+        try:
+            vform = self.current_vform_path or self._vform_path_for_unit()
+            if vform and os.path.isfile(vform):
+                # load form file without scheduling another live sync loop
+                self._suspend_live_sync = True
+                try:
+                    with open(vform, "r", encoding="utf-8") as f:
+                        doc = json.load(f)
+                    self.form_from_document(doc)
+                    self.current_vform_path = vform
+                    self.status(f"Designer loaded from {os.path.basename(vform)}")
+                finally:
+                    self._suspend_live_sync = False
+                return
+            self.sync_from_code()
+        except Exception as e:
+            try:
+                self.sync_from_code()
+            except Exception:
+                self.status(f"Reload designer: {e}")
+
 
     def generate_vcl_code(self, switch_to_code=True):
         self._apply_form_size()
@@ -3412,11 +4032,21 @@ class VertexIDE:
 
     def toggle_mode(self):
         self.gui_mode = not self.gui_mode
-        self.config["auto_detect_gui"] = False
         self.config["gui_app"] = self.gui_mode
         save_config(self.config)
+        if hasattr(self, "mode_btn"):
+            label = "🖥  GUI" if self.gui_mode else "💻  Console"
+            kw = {"text": label, "relief": tk.FLAT}
+            bg = getattr(self.mode_btn, "_v_normal_bg", None)
+            fg = getattr(self.mode_btn, "_v_normal_fg", None)
+            if bg:
+                kw["bg"] = bg
+            if fg:
+                kw["fg"] = fg
+            self.mode_btn.config(**kw)
         self._update_ui_mode()
-        self.status(f"Mode → {'GUI' if self.gui_mode else 'Console'} (auto-detect disabled)")
+        self.status("Mode: " + ("GUI" if self.gui_mode else "Console"))
+
 
     def switch_theme(self, theme_name):
         self.current_theme = theme_name
@@ -3468,7 +4098,7 @@ class VertexIDE:
         self.config["auto_detect_gui"] = True
         save_config(self.config)
         if hasattr(self, "mode_btn"):
-            self.mode_btn.config(text="GUI")
+            self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
         self._update_ui_mode()
         self.root.after(30, lambda: highlight(self.editor))
         self.update_line_numbers()
@@ -3498,19 +4128,28 @@ class VertexIDE:
                 self.config["gui_app"] = True
                 save_config(self.config)
                 if hasattr(self, "mode_btn"):
-                    self.mode_btn.config(text="GUI")
+                    self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
             self._update_ui_mode()
             self.root.after(30, lambda: highlight(self.editor))
             self.update_line_numbers()
             self.root.after(60, self._update_code_explorer)
             self.status(f"Loaded {os.path.basename(path)}")
-            if self.config.get("auto_detect_gui", True) and looks_like_gui(content):
+            vform = self._vform_path_for_unit(path)
+            self.current_vform_path = vform if vform and os.path.isfile(vform) else None
+            if self.current_vform_path:
+                self.root.after(200, lambda: self.open_vform(self.current_vform_path))
+            elif self.config.get("auto_detect_gui", True) and looks_like_gui(content):
                 self.root.after(300, self.sync_from_code)
             self.root.after(100, self._update_code_explorer)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
     def save_file(self):
+        # Always push designer geometry into editor before writing disk
+        try:
+            self._flush_designer_to_storage()
+        except Exception:
+            pass
         if self.current_file:
             self._save_to(self.current_file)
         else:
@@ -3529,7 +4168,10 @@ class VertexIDE:
             self.current_file = path
             self._last_snapshot = self.editor.get("1.0", "end-1c")
             self._mark_dirty(False)
-            self.status(f"Saved {os.path.basename(path)}")
+            # Pair .vtx with .vform (Delphi .pas + .dfm)
+            self.current_vform_path = self._vform_path_for_unit(path)
+            self.save_vform(self.current_vform_path, silent=True)
+            self.status(f"Saved {os.path.basename(path)} + form")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
@@ -3581,21 +4223,35 @@ class VertexIDE:
         gpp_path = self.config.get("gpp_path", "g++")
         static = bool(self.config.get("static_linking", True))
 
+        # Locate optional vertex_build.py (only useful if we have a real Python)
         build_script = None
         for cand in (
+            os.path.join(app_dir(), "vertex_build.py"),
             os.path.join(os.getcwd(), "vertex_build.py"),
             os.path.join(src_dir, "vertex_build.py"),
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "vertex_build.py") if "__file__" in dir() else "",
             os.path.join(os.path.dirname(os.path.abspath(sys.argv[0])), "vertex_build.py"),
         ):
             if cand and os.path.isfile(cand):
                 build_script = cand
                 break
 
+        py_interp = find_python_interpreter()
+        # Packaged IDE EXE: sys.executable is THIS app — never use it to run .py
+        use_build_script = bool(build_script and py_interp and not is_frozen())
+        if is_frozen() and build_script and py_interp:
+            # Frozen but system Python exists — OK to use build script with real python
+            use_build_script = True
+        if is_frozen() and not py_interp:
+            use_build_script = False
+            self._append_output(
+                "Note: running as packaged EXE — using built-in vertexc/g++ path "
+                "(not vertex_build.py).\n", "info"
+            )
+
         try:
-            if build_script:
+            if use_build_script:
                 cmd = [
-                    sys.executable, build_script,
+                    py_interp, build_script,
                     self.current_file,
                     "--mode", mode,
                     "--output-dir", out_dir,
