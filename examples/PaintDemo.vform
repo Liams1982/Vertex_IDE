@@ -1,0 +1,40 @@
+{
+  "format": "VertexForm",
+  "version": 2,
+  "unit": "PaintDemo",
+  "width": 480,
+  "height": 440,
+  "left": 120,
+  "top": 100,
+  "form": {
+    "name": "Vertex Paint Demo",
+    "caption": "Vertex Paint Demo",
+    "left": 120,
+    "top": 100,
+    "width": 480,
+    "height": 440,
+    "client_width": 480,
+    "client_height": 440,
+    "color": "#ffffff",
+    "color_rgb": [
+      255,
+      255,
+      255
+    ]
+  },
+  "controls": [
+    {
+      "name": "hClear",
+      "type": "button",
+      "left": 10,
+      "top": 10,
+      "width": 110,
+      "height": 28,
+      "caption": "Clear / Demo",
+      "color": "",
+      "text_color": "",
+      "enabled": true,
+      "visible": true
+    }
+  ]
+}

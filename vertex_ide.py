@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 APP_NAME = "Vertex IDE"
-APP_VERSION = "1.2"
+APP_VERSION = "1.4.2"
 
 CONFIG_FILE = "vertex_ide.json"
 DEFAULT_CONFIG = {
@@ -1993,40 +1993,42 @@ class VertexIDE:
         for w in self.toolbar.winfo_children():
             w.destroy()
         self.toolbar_buttons.clear()
-        # Colored pill-style actions (Tk approx. rounded via padx/pady + flat relief)
-        # (label, command, tip, bg, fg, hover_bg)
-        dark = theme.get("bg", "#1e1e2e").lower() in ("#1e1e2e", "#272822") or theme.get("name") == "dark"
+        # Modern pill / chip actions
         specs = [
             ("⚙️  Compile", self.compile_file, "Compile (F5)", "#2563eb", "#ffffff", "#3b82f6"),
-            ("▶️  Run", self.run_program, "Run (F6)", "#059669", "#ffffff", "#10b981"),
-            ("📁  Folder", self.show_folder, "Open output folder", "#4b5563", "#ffffff", "#6b7280"),
-            None,  # separator
+            ("▶  Run", self.run_program, "Run (F6)", "#059669", "#ffffff", "#10b981"),
+            ("📁  Folder", self.show_folder, "Open output folder", "#475569", "#f8fafc", "#64748b"),
+            None,
             ("📄  New", self.new_file, "New file (Ctrl+N)", "#7c3aed", "#ffffff", "#8b5cf6"),
             ("📂  Open", self.open_file, "Open file (Ctrl+O)", "#0d9488", "#ffffff", "#14b8a6"),
             ("💾  Save", self.save_file, "Save (Ctrl+S)", "#d97706", "#ffffff", "#f59e0b"),
             None,
-            ("🗔  Form", self.new_form, "New blank form + .vform", "#db2777", "#ffffff", "#ec4899"),
-            ("🔄  Sync", self.sync_from_code, "Reload designer from code / .vform", "#6366f1", "#ffffff", "#818cf8"),
+            ("🗔  Form", self.new_form, "New blank form + .vform (GUI)", "#db2777", "#ffffff", "#ec4899"),
+            ("🔄  Sync", self.sync_from_code, "Reload designer from code / .vform", "#4f46e5", "#ffffff", "#6366f1"),
             None,
-            ("mode", None, "Toggle GUI / Console", "#334155", "#f8fafc", "#475569"),
+            ("mode", None, "Toggle GUI / Console", "#1e293b", "#f1f5f9", "#334155"),
         ]
         for spec in specs:
             if spec is None:
-                tk.Frame(self.toolbar, width=8, bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
+                sep = tk.Frame(self.toolbar, width=1, height=22, bg=theme.get("form_border", "#64748b"))
+                sep.pack(side=tk.LEFT, padx=8, pady=10)
                 continue
             label, cmd, tip, bg, fg, hbg = spec
             if label == "mode":
                 label = "🖥  GUI" if self.gui_mode else "💻  Console"
                 cmd = self.toggle_mode
+                if self.gui_mode:
+                    bg, hbg = "#2563eb", "#3b82f6"
+                else:
+                    bg, hbg = "#475569", "#64748b"
             b = tk.Button(
                 self.toolbar, text=label, command=cmd,
                 bg=bg, fg=fg, activebackground=hbg, activeforeground=fg,
-                relief=tk.FLAT, borderwidth=0, padx=12, pady=6,
+                relief=tk.FLAT, borderwidth=0, padx=14, pady=7,
                 font=("Segoe UI", 9, "bold"), cursor="hand2",
-                highlightthickness=1, highlightbackground=bg, highlightcolor=hbg,
+                highlightthickness=0, bd=0,
             )
-            b.pack(side=tk.LEFT, padx=3, pady=5)
-            # Soft "rounded" look: extra internal padding + matching highlight
+            b.pack(side=tk.LEFT, padx=3, pady=6)
             bind_button_hover(b, theme, normal_bg=bg, normal_fg=fg, hover_bg=hbg, hover_fg=fg)
             self.toolbar_buttons.append(b)
             if tip:
@@ -2037,7 +2039,7 @@ class VertexIDE:
                 b.bind("<Enter>", _st_enter, add="+")
                 b.bind("<Leave>", _st_leave, add="+")
                 ToolTip(b, tip)
-            if label.startswith("🖥") or label.startswith("💻") or "GUI" in label or "Console" in label:
+            if "GUI" in label or "Console" in label:
                 self.mode_btn = b
 
 
@@ -2227,6 +2229,24 @@ class VertexIDE:
 
 
     # ---------- .vform (Delphi-style form resource, JSON) ----------
+
+    def _is_gui_project(self):
+        """True when form / .vform is relevant (GUI mode or designer has controls / Window)."""
+        if getattr(self, "gui_mode", False):
+            return True
+        try:
+            if getattr(self, "design_controls", None) and len(self.design_controls) > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            src = self.editor.get("1.0", "end-1c") if hasattr(self, "editor") else ""
+            if looks_like_gui(src):
+                return True
+        except Exception:
+            pass
+        return False
+
     def _vform_path_for_unit(self, vtx_path=None):
         """Unit1.vtx -> Unit1.vform (same folder)."""
         path = vtx_path or self.current_file
@@ -2325,8 +2345,26 @@ class VertexIDE:
                 continue
         self._redraw_all()
 
+    def _save_vform_disk_only(self, path):
+        """Write .vform JSON to disk without changing the code editor at all."""
+        if not path or not self._is_gui_project():
+            return False
+        try:
+            doc = self.form_to_document()
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(doc, f, indent=2)
+            self.current_vform_path = path
+            return True
+        except Exception:
+            return False
+
     def save_vform(self, path=None, silent=False):
-        """Write layout to .vform (JSON). Like saving a Delphi .dfm."""
+        """Write layout to .vform (JSON). Like saving a Delphi .dfm.
+        Skipped entirely for pure console projects."""
+        if not self._is_gui_project():
+            if not silent:
+                self.status("Console mode — .vform not used")
+            return False
         path = path or self.current_vform_path or self._vform_path_for_unit()
         if not path:
             path = filedialog.asksaveasfilename(
@@ -2341,9 +2379,9 @@ class VertexIDE:
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=2)
             self.current_vform_path = path
-            # Ensure unit references the form file (comment + convention)
-            self._ensure_vform_import_comment(path)
+            # Only inject {$FORM} comment when user explicitly saves form (not silent autosave)
             if not silent:
+                self._ensure_vform_import_comment(path)
                 self.status(f"Form saved: {os.path.basename(path)}")
             return True
         except Exception as e:
@@ -2366,7 +2404,7 @@ class VertexIDE:
             self.form_from_document(doc)
             self.current_vform_path = path
             self.status(f"Form loaded: {os.path.basename(path)}")
-            self._schedule_live_code_sync()
+            # Do NOT write back to the code editor — layout preview only
             return True
         except Exception as e:
             messagebox.showerror("Open Form", str(e))
@@ -2375,6 +2413,8 @@ class VertexIDE:
     def _ensure_vform_import_comment(self, vform_path):
         """Insert a Delphi-style form link comment near the top of the .vtx unit."""
         if not hasattr(self, "editor"):
+            return
+        if not self._is_gui_project():
             return
         rel = os.path.basename(vform_path)
         marker = "{$FORM "
@@ -2398,9 +2438,11 @@ class VertexIDE:
         self.editor.insert("1.0", "\n".join(lines))
 
     def _autosave_vform(self):
+        if not self._is_gui_project():
+            return
         path = self.current_vform_path or self._vform_path_for_unit()
         if path:
-            self.save_vform(path, silent=True)
+            self._save_vform_disk_only(path)
 
     def new_form(self):
         self.clear_form()
@@ -3041,8 +3083,10 @@ class VertexIDE:
 
     # ---------- Code updates for properties ----------
     def _schedule_live_code_sync(self):
-        """Debounce: push designer state into source without requiring Generate."""
+        """Debounce: push designer state into source. Designer tab only."""
         if getattr(self, "_suspend_live_sync", False):
+            return
+        if not self._on_designer_tab():
             return
         if hasattr(self, "_live_sync_job") and self._live_sync_job:
             try:
@@ -3052,9 +3096,11 @@ class VertexIDE:
         self._live_sync_job = self.root.after(250, self._live_sync_all_controls)
 
     def _live_sync_all_controls(self):
-        """Update existing form-section lines for every designer control."""
+        """Update form lines only while the Designer tab is active."""
         self._live_sync_job = None
         if getattr(self, "_suspend_live_sync", False):
+            return
+        if not self._on_designer_tab():
             return
         try:
             for c in list(self.design_controls):
@@ -3243,8 +3289,14 @@ class VertexIDE:
             self._replace_line_in_code(pattern, new_line, re.IGNORECASE)
 
     def _update_code_for_control(self, ctrl):
-        """Write this control's geometry (and caption) into the .vtx source immediately."""
+        """Write this control's geometry into the .vtx source.
+        Only while Form Designer tab is active — never when user is editing Code."""
         try:
+            if not self._on_designer_tab():
+                return
+            if self._code_looks_duplicated():
+                self.status("Code has multiple Enter/Exit — designer will not modify it")
+                return
             type_map = {
                 "button": "Button", "edit": "Edit", "label": "Label", "memo": "Memo",
                 "listbox": "ListBox", "combo": "ComboBox", "checkbox": "CheckBox",
@@ -3255,7 +3307,8 @@ class VertexIDE:
             source = self.editor.get("1.0", "end-1c")
             lines = source.splitlines()
             name = re.escape(ctrl.name)
-            # Match: name <- Type(parent, w, h, x, y);
+
+            # Pattern for creation line: name <- Type(..., w, h, x, y);
             pat = re.compile(
                 r'^(\s*)' + name + r'\s*<-\s*(Button|Edit|Label|Memo|CheckBox|Radio|ListBox|ComboBox|GroupBox|Panel|SevenSeg|HyperTerm)\s*\(\s*\w+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\)\s*;',
                 re.IGNORECASE
@@ -3264,22 +3317,35 @@ class VertexIDE:
                 r'^(\s*)' + name + r'\s*<-\s*StatusBar\s*\(\s*\w+\s*,\s*\d+\s*\)\s*;',
                 re.IGNORECASE
             )
-            updated = False
+
+            # Find if a line already exists; if yes, replace it and also remove any other duplicates
+            existing_indices = []
             for i, line in enumerate(lines):
-                if pat.match(line):
-                    indent = pat.match(line).group(1)
-                    lines[i] = f"{indent}{ctrl.name} <- {code_type}(MainWindow, {ctrl.w}, {ctrl.h}, {ctrl.x}, {ctrl.y});"
-                    updated = True
-                    break
-                if status_pat.match(line):
-                    indent = status_pat.match(line).group(1)
-                    lines[i] = f"{indent}{ctrl.name} <- StatusBar(MainWindow, {ctrl.h});"
-                    updated = True
-                    break
-            if not updated:
-                # Control not in code yet — insert it
+                if pat.match(line) or status_pat.match(line):
+                    existing_indices.append(i)
+
+            if existing_indices:
+                # Keep only the first occurrence, remove the rest
+                keep_idx = existing_indices[0]
+                # Remove all other duplicates (reverse order to preserve indices)
+                for i in sorted(existing_indices[1:], reverse=True):
+                    del lines[i]
+                # Now replace the first occurrence with the new line
+                indent = ""
+                m = pat.match(lines[keep_idx]) or status_pat.match(lines[keep_idx])
+                if m:
+                    indent = m.group(1) or ""
+                if ctrl.ctype == "statusbar":
+                    new_line = f"{indent}{ctrl.name} <- StatusBar(MainWindow, {ctrl.h});"
+                else:
+                    new_line = f"{indent}{ctrl.name} <- {code_type}(MainWindow, {ctrl.w}, {ctrl.h}, {ctrl.x}, {ctrl.y});"
+                lines[keep_idx] = new_line
+                updated = True
+            else:
+                # No existing line – insert it
                 self._insert_code_for_control(ctrl)
                 return
+
             # Update SetSevenSeg / SetText for caption when present
             if ctrl.ctype == "sevenseg":
                 dig = "".join(ch for ch in (ctrl.caption or "0") if ch.isdigit()) or "0"
@@ -3294,6 +3360,7 @@ class VertexIDE:
                         lines[i] = f'  SetText({ctrl.name}, "{ctrl.caption}");'
                         break
 
+            # SetBackColor
             if ctrl.color:
                 rgb = color_rgb_from_stored(ctrl.color)
                 if rgb:
@@ -3306,6 +3373,7 @@ class VertexIDE:
                             found = True
                             break
                     if not found:
+                        # Insert after creation line
                         for i, line in enumerate(lines):
                             if re.search(r'^\s*' + name + r'\s*<-\s*', line):
                                 lines.insert(i + 1, newc)
@@ -3327,6 +3395,8 @@ class VertexIDE:
                             if re.search(r'^\s*' + name + r'\s*<-\s*', line):
                                 lines.insert(i + 1, newc)
                                 break
+
+            # Write back
             self.editor.delete("1.0", tk.END)
             self.editor.insert("1.0", "\n".join(lines))
             try:
@@ -3360,6 +3430,10 @@ class VertexIDE:
         return False
 
     def _insert_code_for_control(self, ctrl):
+        if not self._on_designer_tab():
+            return
+        if self._code_looks_duplicated():
+            return
         lines = []
         ctype_map = {
             "button": "Button",
@@ -3429,11 +3503,17 @@ class VertexIDE:
                 return
 
     def _insert_lines_in_form_section(self, lines_to_insert, before_pattern=None):
+        """Insert lines only if they don't already exist (avoid duplicates)."""
         source = self.editor.get("1.0", "end-1c")
         start_marker = "// --- FORM START ---"
         end_marker = "// --- FORM END ---"
         if start_marker not in source or end_marker not in source:
             return False
+        # Check if any line we want to insert already exists (ignore indentation)
+        for new_line in lines_to_insert:
+            stripped_new = new_line.strip()
+            if stripped_new and stripped_new in source:
+                return False
         lines = source.splitlines()
         start_idx = None
         end_idx = None
@@ -3732,14 +3812,18 @@ class VertexIDE:
             prev = getattr(self, "_prev_tab_index", None)
             self._prev_tab_index = current
 
-            # Leaving Form Designer → force-save layout into code + .vform
+            # Leaving Form Designer → snapshot .vform only (do NOT rewrite user code)
             if prev is not None and hasattr(self, "design_tab_index") and prev == self.design_tab_index:
                 if current != self.design_tab_index:
-                    self._flush_designer_to_storage()
+                    try:
+                        self._autosave_vform()
+                    except Exception:
+                        pass
 
-            # Entering Form Designer → load .vform if present (authoritative), else code
+            # Entering Form Designer → build designer from current code (code is source of truth)
             if hasattr(self, "design_tab_index") and current == self.design_tab_index:
-                self.root.after(40, self._reload_designer_from_storage)
+                self.root.after(40, self._sync_from_code_impl)
+                self.root.after(100, self._autosave_vform)
 
             try:
                 tab_text = self.notebook.tab(current, "text")
@@ -3751,31 +3835,52 @@ class VertexIDE:
             pass
 
     def _flush_designer_to_storage(self):
-        """Persist every control's geometry to .vtx and .vform (call before leaving designer)."""
+        """Persist designer geometry to .vtx only on Designer tab; always may snapshot .vform."""
         try:
-            for c in list(self.design_controls):
-                self._update_code_for_control(c)
-            try:
-                self._sync_form_header_to_code()
-            except Exception:
-                pass
-            path = self.current_vform_path or self._vform_path_for_unit()
-            if path:
-                self.save_vform(path, silent=True)
-            try:
-                self._mark_dirty(True)
-            except Exception:
-                pass
-            self.status("Designer changes saved to code / .vform")
+            if not self._is_gui_project() and not getattr(self, "design_controls", None):
+                return
+            if self._on_designer_tab():
+                for c in list(getattr(self, "design_controls", []) or []):
+                    self._update_code_for_control(c)
+                try:
+                    self._sync_form_header_to_code()
+                except Exception:
+                    pass
+            if self._is_gui_project():
+                path = self.current_vform_path or self._vform_path_for_unit()
+                if path:
+                    self._save_vform_disk_only(path)
+            self.status("Designer layout saved")
         except Exception as e:
             self.status(f"Flush failed: {e}")
 
+
     def _reload_designer_from_storage(self):
-        """Prefer .vform layout; fall back to parsing code."""
+        """Prefer code editor layout; .vform only if code has no form section."""
         try:
+            source = ""
+            try:
+                source = self.editor.get("1.0", "end-1c")
+            except Exception:
+                pass
+            has_form_in_code = bool(
+                source and (
+                    "Window(" in source
+                    or "// --- FORM START ---" in source
+                    or "SevenSeg(" in source
+                    or "Button(" in source
+                )
+            )
+            if has_form_in_code:
+                self.sync_from_code()
+                # keep .vform in sync with code
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+                return
             vform = self.current_vform_path or self._vform_path_for_unit()
             if vform and os.path.isfile(vform):
-                # load form file without scheduling another live sync loop
                 self._suspend_live_sync = True
                 try:
                     with open(vform, "r", encoding="utf-8") as f:
@@ -4134,22 +4239,46 @@ class VertexIDE:
             self.update_line_numbers()
             self.root.after(60, self._update_code_explorer)
             self.status(f"Loaded {os.path.basename(path)}")
-            vform = self._vform_path_for_unit(path)
-            self.current_vform_path = vform if vform and os.path.isfile(vform) else None
-            if self.current_vform_path:
-                self.root.after(200, lambda: self.open_vform(self.current_vform_path))
-            elif self.config.get("auto_detect_gui", True) and looks_like_gui(content):
-                self.root.after(300, self.sync_from_code)
+            if looks_like_gui(content) or self.gui_mode:
+                vform = self._vform_path_for_unit(path)
+                self.current_vform_path = vform if vform and os.path.isfile(vform) else None
+                if self.current_vform_path:
+                    self.root.after(200, lambda: self.open_vform(self.current_vform_path))
+                elif self.config.get("auto_detect_gui", True):
+                    self.root.after(300, self.sync_from_code)
+            else:
+                self.current_vform_path = None
             self.root.after(100, self._update_code_explorer)
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
-    def save_file(self):
-        # Always push designer geometry into editor before writing disk
+
+    def _code_looks_duplicated(self):
+        """True if buffer contains more than one program terminator (catastrophic double)."""
         try:
-            self._flush_designer_to_storage()
+            src = self.editor.get("1.0", "end-1c")
+            return src.count("Exit.") > 1 or src.count("\nEnter ") > 1
         except Exception:
-            pass
+            return False
+
+    def _on_designer_tab(self):
+        """True if Form Designer tab is currently selected."""
+        try:
+            if not hasattr(self, "notebook") or not hasattr(self, "design_tab_index"):
+                return False
+            return self.notebook.index(self.notebook.select()) == self.design_tab_index
+        except Exception:
+            return False
+
+    def save_file(self):
+        """Save .vtx from the editor only.
+        Never regenerate or rewrite the program when the user is on the Code tab."""
+        # Designer may update geometry lines only if code is not already duplicated
+        if self._on_designer_tab() and not self._code_looks_duplicated():
+            try:
+                self._flush_designer_to_storage()
+            except Exception:
+                pass
         if self.current_file:
             self._save_to(self.current_file)
         else:
@@ -4159,19 +4288,38 @@ class VertexIDE:
         path = filedialog.asksaveasfilename(defaultextension=".vtx",
                                             filetypes=[("Vertex files", "*.vtx")])
         if path:
+            if self._on_designer_tab():
+                try:
+                    self._flush_designer_to_storage()
+                except Exception:
+                    pass
             self._save_to(path)
 
     def _save_to(self, path):
+        """Write editor buffer to disk. Does NOT regenerate Enter/Exit or form code."""
         try:
+            content = self.editor.get("1.0", "end-1c")
             with open(path, "w", encoding="utf-8") as f:
-                f.write(self.editor.get("1.0", "end-1c"))
+                f.write(content)
             self.current_file = path
-            self._last_snapshot = self.editor.get("1.0", "end-1c")
+            self._last_snapshot = content
             self._mark_dirty(False)
-            # Pair .vtx with .vform (Delphi .pas + .dfm)
-            self.current_vform_path = self._vform_path_for_unit(path)
-            self.save_vform(self.current_vform_path, silent=True)
-            self.status(f"Saved {os.path.basename(path)} + form")
+            try:
+                self.editor.edit_modified(False)
+            except Exception:
+                pass
+
+            # Optional .vform snapshot — never mutates the editor
+            if self._is_gui_project():
+                self.current_vform_path = self._vform_path_for_unit(path)
+                try:
+                    self._save_vform_disk_only(self.current_vform_path)
+                except Exception:
+                    pass
+                self.status(f"Saved {os.path.basename(path)}")
+            else:
+                self.current_vform_path = None
+                self.status(f"Saved {os.path.basename(path)}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 

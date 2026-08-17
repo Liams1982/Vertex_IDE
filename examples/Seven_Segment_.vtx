@@ -1,0 +1,58 @@
+{ Seven‑Segment Counter – Manual Increment }
+Import "vcl.vtx";
+
+Enter Counter;
+
+Var
+  sevenseg: HWND;
+  btnInc: HWND;
+  count: Integer;
+
+Proc OnBtnClick(hCtrl: HWND);
+Run
+  count <- count + 1;
+  If count > 9 Then
+    count <- 0;
+  SetSevenSeg(sevenseg, 0);
+Stop;
+
+Run
+  count <- 0;
+  Window(201, 226, 120, 100);
+  SetWindowTitle("Form1");
+  sevenseg <- SevenSeg(MainWindow, 55, 87, 290, 18);
+  SetSevenSeg(sevenseg, 0);          { initial 0 }
+  btnInc <- Button(MainWindow, 100, 32, 170, 140);
+  SetText(btnInc, "Increment");
+  OnClick(@OnBtnClick);
+  RunApp();
+Stop
+Exit.{ Seven‑Segment Counter – Manual Increment }
+Import "vcl.vtx";
+{$FORM "Seven_Segment_.vform"}  { layout resource — edit in Form Designer }
+
+Enter Counter;
+
+Var
+  sevenseg: HWND;
+  btnInc: HWND;
+  count: Integer;
+
+Proc OnBtnClick(hCtrl: HWND);
+Run
+  count <- count + 1;
+  If count > 9 Then
+    count <- 0;
+  SetSevenSeg(sevenseg, count);      { ← updates display with integer }
+Stop;
+
+Run
+  count <- 0;
+  Window(201, 226, 120, 100);
+  SetWindowTitle("Form1");
+  SetSevenSeg(sevenseg, 0);          { initial 0 }
+  SetText(btnInc, "Increment");
+  OnClick(@OnBtnClick);
+  RunApp();
+Stop
+Exit.

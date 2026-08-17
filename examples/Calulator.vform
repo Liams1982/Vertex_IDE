@@ -1,0 +1,356 @@
+{
+  "format": "VertexForm",
+  "version": 2,
+  "unit": "Calulator",
+  "width": 231,
+  "height": 320,
+  "left": 120,
+  "top": 100,
+  "form": {
+    "name": "Vertex Calculator",
+    "caption": "Vertex Calculator",
+    "left": 120,
+    "top": 100,
+    "width": 231,
+    "height": 320,
+    "client_width": 231,
+    "client_height": 320,
+    "color": "#f0f0f5",
+    "color_rgb": [
+      240,
+      240,
+      245
+    ]
+  },
+  "controls": [
+    {
+      "name": "hDisplay",
+      "type": "edit",
+      "left": 10,
+      "top": 10,
+      "width": 200,
+      "height": 30,
+      "caption": "0",
+      "color": "#ffffff",
+      "text_color": "#000000",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        255,
+        255
+      ],
+      "text_color_rgb": [
+        0,
+        0,
+        0
+      ]
+    },
+    {
+      "name": "hBtn7",
+      "type": "button",
+      "left": 10,
+      "top": 50,
+      "width": 45,
+      "height": 40,
+      "caption": "7",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn8",
+      "type": "button",
+      "left": 60,
+      "top": 50,
+      "width": 45,
+      "height": 40,
+      "caption": "8",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn9",
+      "type": "button",
+      "left": 110,
+      "top": 50,
+      "width": 45,
+      "height": 40,
+      "caption": "9",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtnDiv",
+      "type": "button",
+      "left": 160,
+      "top": 50,
+      "width": 45,
+      "height": 40,
+      "caption": "/",
+      "color": "#ffc864",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        200,
+        100
+      ]
+    },
+    {
+      "name": "hBtn4",
+      "type": "button",
+      "left": 10,
+      "top": 95,
+      "width": 45,
+      "height": 40,
+      "caption": "4",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn5",
+      "type": "button",
+      "left": 60,
+      "top": 95,
+      "width": 45,
+      "height": 40,
+      "caption": "5",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn6",
+      "type": "button",
+      "left": 110,
+      "top": 95,
+      "width": 45,
+      "height": 40,
+      "caption": "6",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtnMul",
+      "type": "button",
+      "left": 160,
+      "top": 95,
+      "width": 45,
+      "height": 40,
+      "caption": "*",
+      "color": "#ffc864",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        200,
+        100
+      ]
+    },
+    {
+      "name": "hBtn1",
+      "type": "button",
+      "left": 10,
+      "top": 140,
+      "width": 45,
+      "height": 40,
+      "caption": "1",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn2",
+      "type": "button",
+      "left": 60,
+      "top": 140,
+      "width": 45,
+      "height": 40,
+      "caption": "2",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtn3",
+      "type": "button",
+      "left": 110,
+      "top": 140,
+      "width": 45,
+      "height": 40,
+      "caption": "3",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtnSub",
+      "type": "button",
+      "left": 160,
+      "top": 140,
+      "width": 45,
+      "height": 40,
+      "caption": "-",
+      "color": "#ffc864",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        200,
+        100
+      ]
+    },
+    {
+      "name": "hBtn0",
+      "type": "button",
+      "left": 10,
+      "top": 185,
+      "width": 45,
+      "height": 40,
+      "caption": "0",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtnDot",
+      "type": "button",
+      "left": 60,
+      "top": 185,
+      "width": 45,
+      "height": 40,
+      "caption": ".",
+      "color": "#dcdce6",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        220,
+        220,
+        230
+      ]
+    },
+    {
+      "name": "hBtnClear",
+      "type": "button",
+      "left": 110,
+      "top": 185,
+      "width": 45,
+      "height": 40,
+      "caption": "C",
+      "color": "#ff9696",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        150,
+        150
+      ]
+    },
+    {
+      "name": "hBtnAdd",
+      "type": "button",
+      "left": 160,
+      "top": 185,
+      "width": 45,
+      "height": 40,
+      "caption": "+",
+      "color": "#ffc864",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        255,
+        200,
+        100
+      ]
+    },
+    {
+      "name": "hBtnEqual",
+      "type": "button",
+      "left": 10,
+      "top": 230,
+      "width": 195,
+      "height": 40,
+      "caption": "=",
+      "color": "#64c8ff",
+      "text_color": "",
+      "enabled": true,
+      "visible": true,
+      "color_rgb": [
+        100,
+        200,
+        255
+      ]
+    }
+  ]
+}
