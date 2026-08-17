@@ -2086,9 +2086,17 @@ class VertexIDE:
         source = self.editor.get("1.0","end-1c") if hasattr(self,"editor") else ""
         auto = self.config.get("auto_detect_gui", True)
         use_gui = self.gui_mode if not auto else (self.gui_mode or looks_like_gui(source))
-        if hasattr(self, "mode_btn"):
+        if hasattr(self, "mode_btn") and self.mode_btn is not None:
             try:
-                self.mode_btn.configure(text=("  GUI  " if use_gui else "  Console  "))
+                theme = THEMES[self.current_theme]
+                elevated = theme.get("elevated", theme["btn_bg"])
+                muted = theme.get("fg_muted", theme["toolbar_fg"])
+                if use_gui:
+                    self.mode_btn.configure(text="  🖥 GUI  ", bg="#1e3a5f", fg="#60a5fa")
+                    self.mode_btn._bg, self.mode_btn._hover = "#1e3a5f", "#2563eb"
+                else:
+                    self.mode_btn.configure(text="  💻 Console  ", bg=elevated, fg=muted)
+                    self.mode_btn._bg, self.mode_btn._hover = elevated, "#2c3648"
             except Exception:
                 pass
         if hasattr(self,"notebook") and hasattr(self,"design_tab_index"):
@@ -2168,7 +2176,6 @@ class VertexIDE:
         else:
             self.mode_btn = _add("  Console  ", self.toggle_mode, elevated, muted, "#2c3648",
                                  "Toggle GUI / Console", side=tk.RIGHT)
-        # pack mode to the right
         try:
             self.mode_btn.pack_forget()
             self.mode_btn.pack(side=tk.RIGHT, padx=12, pady=8)
@@ -2601,7 +2608,7 @@ class VertexIDE:
         self.config["auto_detect_gui"] = True
         save_config(self.config)
         if hasattr(self,"mode_btn"):
-            self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
+            self.mode_btn.configure(text="  🖥 GUI  ")
         self._update_ui_mode()
         self.status("New form ready - pick a control, click on the form to place it")
 
@@ -3643,42 +3650,103 @@ class VertexIDE:
                 self.root.after(20, lambda: highlight(self.editor))
                 self.update_line_numbers()
                 return
+        for i, line in enumerate(lines):
+            if line.strip().startswith("Enter "):
+                lines.insert(i + 1, "Var")
+                lines.insert(i + 2, decl)
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", "\n".join(lines))
+                self.root.after(20, lambda: highlight(self.editor))
+                self.update_line_numbers()
+                return
+
 
     def _insert_lines_in_form_section(self, lines_to_insert, before_pattern=None):
-        """Insert lines only if they don't already exist (avoid duplicates)."""
+        """Insert control lines AFTER Window(...) and BEFORE RunApp()/OnClick.
+        Wrong order (before Window or after RunApp) makes controls invisible at runtime.
+        """
         source = self.editor.get("1.0", "end-1c")
-        start_marker = "// --- FORM START ---"
-        end_marker = "// --- FORM END ---"
-        if start_marker not in source or end_marker not in source:
-            return False
-        # Check if any line we want to insert already exists (ignore indentation)
         for new_line in lines_to_insert:
             stripped_new = new_line.strip()
             if stripped_new and stripped_new in source:
                 return False
+
         lines = source.splitlines()
-        start_idx = None
-        end_idx = None
-        for i, line in enumerate(lines):
-            if line.strip() == start_marker:
-                start_idx = i
-            elif line.strip() == end_marker:
-                end_idx = i
-                break
-        if start_idx is None or end_idx is None:
-            return False
-        insert_pos = end_idx
-        if before_pattern:
-            for i in range(start_idx+1, end_idx):
-                if re.search(before_pattern, lines[i]):
-                    insert_pos = i
+        start_marker = "// --- FORM START ---"
+        end_marker = "// --- FORM END ---"
+        insert_pos = None
+
+        # 1) Prefer explicit FORM section
+        if start_marker in source and end_marker in source:
+            start_idx = end_idx = None
+            for i, line in enumerate(lines):
+                if line.strip() == start_marker:
+                    start_idx = i
+                elif line.strip() == end_marker:
+                    end_idx = i
                     break
-        new_lines = lines[:insert_pos] + lines_to_insert + lines[insert_pos:]
+            if start_idx is not None and end_idx is not None:
+                insert_pos = end_idx
+                # after Window / title / color if present inside section
+                last_setup = start_idx
+                for i in range(start_idx + 1, end_idx):
+                    if re.search(
+                        r'^\s*(Window|SetWindowTitle|SetFormColor)\s*\(',
+                        lines[i],
+                    ):
+                        last_setup = i
+                insert_pos = last_setup + 1
+                if before_pattern:
+                    for i in range(start_idx + 1, end_idx):
+                        if re.search(before_pattern, lines[i]):
+                            insert_pos = i
+                            break
+
+        # 2) No markers: place after last Window/SetWindowTitle/SetFormColor,
+        #    and before OnClick / RunApp
+        if insert_pos is None:
+            last_setup = -1
+            first_tail = None
+            for i, line in enumerate(lines):
+                if re.search(
+                    r'^\s*(Window|SetWindowTitle|SetFormColor)\s*\(',
+                    line,
+                ):
+                    last_setup = i
+                if first_tail is None and re.search(
+                    r'^\s*(OnClick|RunApp)\s*\(',
+                    line,
+                ):
+                    first_tail = i
+            if last_setup >= 0:
+                insert_pos = last_setup + 1
+                if first_tail is not None and first_tail > last_setup:
+                    insert_pos = first_tail
+            elif first_tail is not None:
+                insert_pos = first_tail
+
+        if insert_pos is None:
+            for i, line in enumerate(lines):
+                if line.strip().startswith("Exit"):
+                    for j in range(i - 1, -1, -1):
+                        if lines[j].strip() in ("Stop", "Stop;"):
+                            insert_pos = j
+                            break
+                    break
+        if insert_pos is None:
+            insert_pos = len(lines)
+
+        new_lines = lines[:insert_pos] + list(lines_to_insert) + lines[insert_pos:]
         self.editor.delete("1.0", tk.END)
         self.editor.insert("1.0", "\n".join(new_lines))
+        try:
+            self._mark_dirty(True)
+        except Exception:
+            pass
         self.root.after(20, lambda: highlight(self.editor))
         self.update_line_numbers()
         return True
+
 
     def _remove_lines_for_control(self, ctrl_name):
         source = self.editor.get("1.0", "end-1c")
@@ -3954,11 +4022,14 @@ class VertexIDE:
             prev = getattr(self, "_prev_tab_index", None)
             self._prev_tab_index = current
 
-            # Leaving Form Designer → snapshot .vform only (do NOT rewrite user code)
+            # Leaving Form Designer → write control lines into code + .vform
             if prev is not None and hasattr(self, "design_tab_index") and prev == self.design_tab_index:
                 if current != self.design_tab_index:
                     try:
-                        self._autosave_vform()
+                        if not self._code_looks_duplicated():
+                            self._flush_designer_to_storage()
+                        else:
+                            self._autosave_vform()
                     except Exception:
                         pass
 
@@ -4282,18 +4353,21 @@ class VertexIDE:
         self.config["gui_app"] = self.gui_mode
         save_config(self.config)
         theme = THEMES[self.current_theme]
-        if hasattr(self, "mode_btn"):
+        elevated = theme.get("elevated", theme["btn_bg"])
+        muted = theme.get("fg_muted", theme["toolbar_fg"])
+        if hasattr(self, "mode_btn") and self.mode_btn is not None:
             try:
                 if self.gui_mode:
-                    self.mode_btn.configure(text="  GUI  ", bg="#1e3a5f", fg="#60a5fa")
-                    self.mode_btn._bg, self.mode_btn._hover = "#1e3a5f", "#2563eb"
+                    self.mode_btn.configure(text="  🖥 GUI  ", bg="#1e3a5f", fg="#60a5fa")
+                    self.mode_btn._bg = "#1e3a5f"
+                    self.mode_btn._hover = "#2563eb"
                 else:
-                    elevated = theme.get("elevated", theme["btn_bg"])
-                    muted = theme.get("fg_muted", theme["toolbar_fg"])
-                    self.mode_btn.configure(text="  Console  ", bg=elevated, fg=muted)
-                    self.mode_btn._bg, self.mode_btn._hover = elevated, "#2c3648"
+                    self.mode_btn.configure(text="  💻 Console  ", bg=elevated, fg=muted)
+                    self.mode_btn._bg = elevated
+                    self.mode_btn._hover = "#2c3648"
             except Exception:
                 pass
+        self._update_ui_mode()
         self.status("Mode: " + ("GUI" if self.gui_mode else "Console"))
 
 
@@ -4347,7 +4421,7 @@ class VertexIDE:
         self.config["auto_detect_gui"] = True
         save_config(self.config)
         if hasattr(self, "mode_btn"):
-            self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
+            self.mode_btn.configure(text="  🖥 GUI  ")
         self._update_ui_mode()
         self.root.after(30, lambda: highlight(self.editor))
         self.update_line_numbers()
@@ -4377,7 +4451,7 @@ class VertexIDE:
                 self.config["gui_app"] = True
                 save_config(self.config)
                 if hasattr(self, "mode_btn"):
-                    self.mode_btn.config(text="🖥  GUI", relief=tk.FLAT)
+                    self.mode_btn.configure(text="  🖥 GUI  ")
             self._update_ui_mode()
             self.root.after(30, lambda: highlight(self.editor))
             self.update_line_numbers()
