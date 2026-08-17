@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 APP_NAME = "Vertex IDE"
-APP_VERSION = "1.4.2"
+APP_VERSION = "1.6"
 
 CONFIG_FILE = "vertex_ide.json"
 DEFAULT_CONFIG = {
@@ -24,6 +24,7 @@ DEFAULT_CONFIG = {
     "theme": "dark",
     "auto_detect_gui": True,
     "sidebar_width": 280,
+    "palette_height": 280,
 }
 
 def load_config():
@@ -385,29 +386,32 @@ def color_hex_from_rgb(r: int, g: int, b: int) -> str:
 
 THEMES = {
     "dark": {
-        "bg": "#1e1e2e",
-        "ac_bg": "#313244", "ac_fg": "#cdd6f4", "ac_sel": "#89b4fa",
-        "ac_border": "#89b4fa", "accent": "#89b4fa", "accent2": "#a6e3a1",
-        "fg": "#cdd6f4", "insertbg": "#f5e0dc",
-        "select_bg": "#45475a", "toolbar_bg": "#181825", "toolbar_fg": "#bac2de",
-        "btn_bg": "#313244", "btn_fg": "#cdd6f4", "btn_active": "#45475a",
-        "btn_hover": "#585b70", "btn_hover_fg": "#ffffff",
-        "status_bg": "#89b4fa", "status_fg": "#1e1e2e",
-        "output_bg": "#11111b", "output_fg": "#a6adc8",
-        "line_bg": "#181825", "line_fg": "#6c7086",
-        "splash_bg": "#1e1e2e", "splash_fg": "#89b4fa",
-        "success": "#a6e3a1", "error": "#f38ba8",
-        "palette_bg": "#181825",
-        "form_bg": "#dce0e8",
-        "form_border": "#7f849c",
-        "prop_bg": "#1e1e2e",
-        "keyword": {"fg": "#89b4fa", "bold": True},
-        "flow": {"fg": "#f5c2e7", "bold": True},
-        "type": {"fg": "#94e2d5", "bold": False},
-        "string": {"fg": "#a6e3a1"},
-        "comment": {"fg": "#6c7086", "italic": True},
-        "commentline": {"fg": "#6c7086", "italic": True},
-        "number": {"fg": "#fab387"},
+        "bg": "#0f1117",
+        "ac_bg": "#1c2330", "ac_fg": "#e6edf3", "ac_sel": "#3b82f6",
+        "ac_border": "#3b82f6", "accent": "#3b82f6", "accent2": "#22c55e",
+        "fg": "#e6edf3", "insertbg": "#60a5fa",
+        "select_bg": "#1e3a5f", "toolbar_bg": "#161b22", "toolbar_fg": "#8b9bb4",
+        "btn_bg": "#222a38", "btn_fg": "#e6edf3", "btn_active": "#2c3648",
+        "btn_hover": "#2c3648", "btn_hover_fg": "#ffffff",
+        "status_bg": "#3b82f6", "status_fg": "#ffffff",
+        "output_bg": "#0d1017", "output_fg": "#8b9bb4",
+        "line_bg": "#161b22", "line_fg": "#5c6b82",
+        "splash_bg": "#0f1117", "splash_fg": "#3b82f6",
+        "success": "#22c55e", "error": "#ef4444",
+        "palette_bg": "#161b22",
+        "form_bg": "#c5cdd8",
+        "form_border": "#2a3344",
+        "prop_bg": "#161b22",
+        "sash": "#2a3344",
+        "elevated": "#222a38",
+        "fg_muted": "#8b9bb4",
+        "keyword": {"fg": "#60a5fa", "bold": True},
+        "flow": {"fg": "#e879f9", "bold": True},
+        "type": {"fg": "#2dd4bf", "bold": False},
+        "string": {"fg": "#4ade80"},
+        "comment": {"fg": "#5c6b82", "italic": True},
+        "commentline": {"fg": "#5c6b82", "italic": True},
+        "number": {"fg": "#fb923c"},
     },
     "light": {
         "bg": "#fafbff",
@@ -426,6 +430,9 @@ THEMES = {
         "form_bg": "#f1f5f9",
         "form_border": "#94a3b8",
         "prop_bg": "#f8fafc",
+        "sash": "#cbd5e1",
+        "elevated": "#e2e8f0",
+        "fg_muted": "#64748b",
         "keyword": {"fg": "#2563eb", "bold": True},
         "flow": {"fg": "#7c3aed", "bold": True},
         "type": {"fg": "#0d9488", "bold": False},
@@ -451,6 +458,9 @@ THEMES = {
         "form_bg": "#e6e6e6",
         "form_border": "#75715e",
         "prop_bg": "#3e3d32",
+        "sash": "#49483e",
+        "elevated": "#3e3d32",
+        "fg_muted": "#75715e",
         "keyword": {"fg": "#f92672", "bold": True},
         "flow": {"fg": "#ffffff", "bold": True},
         "type": {"fg": "#66d9ef", "bold": False},
@@ -518,10 +528,48 @@ def bind_button_hover(btn, theme, normal_bg=None, normal_fg=None, hover_bg=None,
             except Exception:
                 pass
 
+
+def soft_button(parent, text, command=None, bg=None, fg=None, padx=12, pady=6,
+                font=("Segoe UI", 9, "bold"), hover=None):
+    """Template-style flat pill (Label) — no raised relief."""
+    btn = tk.Label(parent, text=text, bg=bg, fg=fg, font=font,
+                   padx=padx, pady=pady, cursor="hand2")
+    btn._bg = bg
+    btn._hover = hover or bg
+    btn._fg = fg
+
+    def on_enter(_):
+        try:
+            btn.configure(bg=btn._hover)
+        except Exception:
+            pass
+
+    def on_leave(_):
+        try:
+            btn.configure(bg=btn._bg)
+        except Exception:
+            pass
+
+    def on_click(_):
+        if command:
+            command()
+
     btn.bind("<Enter>", on_enter)
     btn.bind("<Leave>", on_leave)
-    btn.bind("<ButtonPress-1>", on_press)
-    btn.bind("<ButtonRelease-1>", on_release)
+    btn.bind("<Button-1>", on_click)
+    return btn
+
+
+def section_header(parent, title, theme):
+    fr = tk.Frame(parent, bg=theme.get("palette_bg", theme.get("prop_bg", theme["bg"])))
+    tk.Label(
+        fr, text=title.upper(),
+        bg=theme.get("palette_bg", theme.get("prop_bg", theme["bg"])),
+        fg=theme.get("fg_muted", theme.get("line_fg", "#8b9bb4")),
+        font=("Segoe UI", 8, "bold"),
+    ).pack(side=tk.LEFT, padx=10, pady=(10, 4))
+    return fr
+
 
 # ---------- Helpers ----------
 def is_frozen():
@@ -988,12 +1036,13 @@ class VertexIDE:
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
         # Toolbar
-        self.toolbar = tk.Frame(self.root, height=44, bg=theme["toolbar_bg"])
+        self.toolbar = tk.Frame(self.root, height=48, bg=theme["toolbar_bg"])
         self.toolbar.pack(side=tk.TOP, fill=tk.X)
         self.toolbar.pack_propagate(False)
 
         brand = tk.Frame(self.toolbar, bg=theme["toolbar_bg"])
-        brand.pack(side=tk.LEFT, padx=(8, 4), pady=4)
+        brand._v_brand = True
+        brand.pack(side=tk.LEFT, padx=(12, 8), pady=8)
         self._brand_icon = None
         try:
             from PIL import Image, ImageTk
@@ -1005,8 +1054,12 @@ class VertexIDE:
                 tk.Label(brand, image=self._brand_icon, bg=theme["toolbar_bg"]).pack(side=tk.LEFT, padx=(0, 6))
         except Exception:
             pass
-        tk.Label(brand, text=f"{APP_NAME}  v{APP_VERSION}", font=("Segoe UI", 11, "bold"),
-                 fg=theme["splash_fg"], bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
+        tk.Label(brand, text="◆", font=("Segoe UI", 14, "bold"),
+                 fg=theme["accent"], bg=theme["toolbar_bg"]).pack(side=tk.LEFT, padx=(0, 4))
+        tk.Label(brand, text="Vertex", font=("Segoe UI", 12, "bold"),
+                 fg=theme["fg"], bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
+        tk.Label(brand, text=f"  v{APP_VERSION}", font=("Segoe UI", 9),
+                 fg=theme.get("fg_muted", theme["toolbar_fg"]), bg=theme["toolbar_bg"]).pack(side=tk.LEFT)
 
         tk.Frame(self.toolbar, width=1, bg=theme.get("form_border", "#555555")).pack(side=tk.LEFT, fill=tk.Y, padx=6, pady=6)
 
@@ -1036,11 +1089,22 @@ class VertexIDE:
         self.output_text.tag_config("info", foreground=theme["toolbar_fg"])
 
         # Main paned
-        self.main_pane = tk.PanedWindow(self.root, orient=tk.HORIZONTAL, sashwidth=6,
-                                        bg=theme["toolbar_bg"], sashrelief=tk.FLAT,
-                                        sashpad=1)
+        self.main_pane = tk.PanedWindow(
+            self.root, orient=tk.HORIZONTAL,
+            sashwidth=8, sashpad=2, sashrelief=tk.FLAT,
+            bg=theme.get("sash", theme["toolbar_bg"]),
+            opaqueresize=True,
+        )
         self.main_pane.pack(fill=tk.BOTH, expand=True, padx=0, pady=0)
+        self.main_pane.bind("<ButtonRelease-1>", self._on_main_sash_release)
 
+        # LEFT — Palette (template layout)
+        left_w = int(self.config.get("palette_width", 200) or 200)
+        left = tk.Frame(self.main_pane, bg=theme["palette_bg"], width=left_w)
+        self.main_pane.add(left, minsize=160, width=left_w)
+        self.left_pane = left
+
+        # CENTER — Code / Designer / Explorer
         center = tk.Frame(self.main_pane, bg=theme["bg"])
         self.main_pane.add(center, stretch="always", minsize=420)
 
@@ -1156,19 +1220,17 @@ class VertexIDE:
         self.form_canvas.bind("<B1-Motion>", self._form_drag)
         self.form_canvas.bind("<ButtonRelease-1>", self._form_release)
 
-        # Right panel (sidebar ~250px default)
-        sidebar_w = int(self.config.get("sidebar_width", 250) or 250)
-        right = tk.Frame(self.main_pane, bg=theme["palette_bg"], width=sidebar_w)
-        self.main_pane.add(right, minsize=220, width=sidebar_w)
-        right_split = tk.PanedWindow(right, orient=tk.VERTICAL, sashwidth=5,
-                                     bg=theme["toolbar_bg"], sashrelief=tk.FLAT)
-        right_split.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
+        # RIGHT — Properties / Events (template layout)
+        sidebar_w = int(self.config.get("sidebar_width", 260) or 260)
+        right = tk.Frame(self.main_pane, bg=theme["prop_bg"], width=sidebar_w)
+        self.main_pane.add(right, minsize=200, width=sidebar_w)
+        self.right_pane = right
 
-        # Palette (scrollable)
-        self.palette = tk.Frame(right_split, bg=theme["palette_bg"])
-        right_split.add(self.palette, minsize=160)
-        tk.Label(self.palette, text="  Standard", bg=theme["palette_bg"], fg=theme["splash_fg"],
-                 font=("Segoe UI", 10, "bold")).pack(pady=(10, 4), padx=8, anchor=tk.W)
+        # Palette lives on the LEFT pane
+        self.palette = tk.Frame(self.left_pane, bg=theme["palette_bg"])
+        self.palette.pack(fill=tk.BOTH, expand=True)
+        section_header(self.palette, "Palette", theme).pack(fill=tk.X)
+        tk.Frame(self.palette, bg=theme.get("form_border", "#2a3344"), height=1).pack(fill=tk.X)
 
         pal_scroll_host = tk.Frame(self.palette, bg=theme["palette_bg"])
         pal_scroll_host.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
@@ -1214,36 +1276,53 @@ class VertexIDE:
             w.bind("<Button-5>", _palette_wheel)
 
         grid_frame = tk.Frame(self.palette_inner, bg=theme["palette_bg"])
-        grid_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
+        grid_frame.pack(fill=tk.BOTH, expand=True, padx=8, pady=8)
 
         self.palette_btns = {}
+        elevated = theme.get("elevated", theme["btn_bg"])
+        border = theme.get("form_border", "#2a3344")
         row = 0
         col = 0
         for ctype, label, dw, dh, cap, icon in PALETTE:
-            b = tk.Button(
-                grid_frame,
-                text=f"{icon}\n{label}",
-                bg=theme["btn_bg"], fg=theme["btn_fg"],
-                activebackground=theme["btn_active"],
-                relief=tk.FLAT,
-                font=("Segoe UI", 11, "bold"),
-                padx=2, pady=2,
-                width=7, height=2,
-                justify=tk.CENTER,
-                command=lambda t=ctype: self._select_tool(t)
+            cell = tk.Frame(
+                grid_frame, bg=elevated,
+                highlightthickness=1, highlightbackground=border,
+                cursor="hand2",
             )
-            b.grid(row=row, column=col, padx=2, pady=2, sticky="nsew")
-            self.palette_btns[ctype] = b
-            bind_button_hover(b, theme)
-            b.bind("<MouseWheel>", _palette_wheel)
-            b.bind("<Button-4>", _palette_wheel)
-            b.bind("<Button-5>", _palette_wheel)
+            cell.grid(row=row, column=col, padx=3, pady=3, sticky="nsew")
+            ic = tk.Label(cell, text=icon, bg=elevated, fg=theme["fg"],
+                          font=("Segoe UI", 14), cursor="hand2")
+            ic.pack(pady=(10, 0))
+            lb = tk.Label(cell, text=label, bg=elevated,
+                          fg=theme.get("fg_muted", theme["toolbar_fg"]),
+                          font=("Segoe UI", 8), cursor="hand2")
+            lb.pack(pady=(0, 10))
+            self.palette_btns[ctype] = cell
+
+            def _pick(e=None, t=ctype):
+                self._select_tool(t)
+
+            def _enter(e, c=cell, bd=border):
+                c.configure(highlightbackground=theme["accent"])
+
+            def _leave(e, c=cell, bd=border):
+                # restore unless selected
+                if getattr(self, "palette_tool", None) != getattr(c, "_ctype", None):
+                    c.configure(highlightbackground=bd)
+
+            cell._ctype = ctype
+            for w in (cell, ic, lb):
+                w.bind("<Button-1>", _pick)
+                w.bind("<Enter>", _enter)
+                w.bind("<Leave>", _leave)
+                w.bind("<MouseWheel>", _palette_wheel)
+                w.bind("<Button-4>", _palette_wheel)
+                w.bind("<Button-5>", _palette_wheel)
             col += 1
-            if col >= 3:
+            if col >= 2:
                 col = 0
                 row += 1
-
-        for c in range(3):
+        for c in range(2):
             grid_frame.columnconfigure(c, weight=1)
 
         # Separator (fixed under scroll area)
@@ -1260,9 +1339,9 @@ class VertexIDE:
             _b.pack(fill=tk.X, padx=6, pady=2)
             bind_button_hover(_b, theme)
 
-        # Component Editor + Events (tabbed)
-        comp_outer = tk.Frame(right_split, bg=theme["prop_bg"])
-        right_split.add(comp_outer, minsize=220)
+        # Component Editor + Events (RIGHT pane)
+        comp_outer = tk.Frame(self.right_pane, bg=theme["prop_bg"])
+        comp_outer.pack(fill=tk.BOTH, expand=True)
         self.prop_notebook = ttk.Notebook(comp_outer)
         self.prop_notebook.pack(fill=tk.BOTH, expand=True, padx=2, pady=2)
         props_tab = tk.Frame(self.prop_notebook, bg=theme["prop_bg"])
@@ -1311,6 +1390,8 @@ class VertexIDE:
         self.comp_editor.bind("<Button-4>", _comp_wheel)
         self.comp_editor.bind("<Button-5>", _comp_wheel)
 
+        section_header(self.comp_editor, "Properties", theme).pack(fill=tk.X)
+        tk.Frame(self.comp_editor, bg=theme.get("form_border", "#2a3344"), height=1).pack(fill=tk.X)
         self.comp_sel_label = tk.Label(self.comp_editor, text="(none selected)",
                                        bg=theme["prop_bg"], fg=theme["line_fg"],
                                        font=("Segoe UI", 8), anchor=tk.W)
@@ -1958,27 +2039,58 @@ class VertexIDE:
 
 
     def _place_sidebar_sash(self):
-        """Position the main paned window sash so the right sidebar has the configured width."""
+        """Place left (palette) and right (properties) sashes from saved widths."""
         try:
-            if not hasattr(self, "main_pane"):
-                return
             self.root.update_idletasks()
             total = self.main_pane.winfo_width()
             if total < 200:
+                self.root.after(120, self._place_sidebar_sash)
                 return
-            sidebar_w = int(self.config.get("sidebar_width", 250) or 250)
-            pos = max(400, total - sidebar_w)
-            self.main_pane.sash_place(0, pos, 0)
+            left_w = int(self.config.get("palette_width", 200) or 200)
+            right_w = int(self.config.get("sidebar_width", 260) or 260)
+            left_w = max(160, min(left_w, 360))
+            right_w = max(200, min(right_w, 420))
+            # ensure center has room
+            if left_w + right_w > total - 300:
+                scale = (total - 300) / max(left_w + right_w, 1)
+                left_w = max(160, int(left_w * scale))
+                right_w = max(200, int(right_w * scale))
+            self.main_pane.sash_place(0, left_w, 0)
+            self.main_pane.sash_place(1, max(left_w + 300, total - right_w), 0)
         except Exception:
             pass
+
+
+    def _on_main_sash_release(self, event=None):
+        """Persist left palette width and right properties width."""
+        try:
+            self.root.update_idletasks()
+            total = self.main_pane.winfo_width()
+            x0 = self.main_pane.sash_coord(0)[0]
+            x1 = self.main_pane.sash_coord(1)[0]
+            left_w = max(160, x0)
+            right_w = max(200, total - x1)
+            self.config["palette_width"] = int(left_w)
+            self.config["sidebar_width"] = int(right_w)
+            save_config(self.config)
+            self.status(f"Panels: palette {left_w}px · properties {right_w}px")
+        except Exception:
+            pass
+
+    def _on_right_sash_release(self, event=None):
+        """No vertical split in template layout (kept for compatibility)."""
+        pass
 
 
     def _update_ui_mode(self):
         source = self.editor.get("1.0","end-1c") if hasattr(self,"editor") else ""
         auto = self.config.get("auto_detect_gui", True)
         use_gui = self.gui_mode if not auto else (self.gui_mode or looks_like_gui(source))
-        if hasattr(self,"mode_btn"):
-            self.mode_btn.config(text=("🖥  GUI" if use_gui else "💻  Console"), relief=tk.FLAT)
+        if hasattr(self, "mode_btn"):
+            try:
+                self.mode_btn.configure(text=("  GUI  " if use_gui else "  Console  "))
+            except Exception:
+                pass
         if hasattr(self,"notebook") and hasattr(self,"design_tab_index"):
             if use_gui:
                 self.notebook.tab(self.design_tab_index, state="normal")
@@ -1988,64 +2100,84 @@ class VertexIDE:
             self.config["gui_app"] = use_gui
             save_config(self.config)
 
-    # ---------- Toolbar ----------
     def _make_toolbar_buttons(self, theme):
-        for w in self.toolbar.winfo_children():
-            w.destroy()
-        self.toolbar_buttons.clear()
-        # Modern pill / chip actions
-        specs = [
-            ("⚙️  Compile", self.compile_file, "Compile (F5)", "#2563eb", "#ffffff", "#3b82f6"),
-            ("▶  Run", self.run_program, "Run (F6)", "#059669", "#ffffff", "#10b981"),
-            ("📁  Folder", self.show_folder, "Open output folder", "#475569", "#f8fafc", "#64748b"),
-            None,
-            ("📄  New", self.new_file, "New file (Ctrl+N)", "#7c3aed", "#ffffff", "#8b5cf6"),
-            ("📂  Open", self.open_file, "Open file (Ctrl+O)", "#0d9488", "#ffffff", "#14b8a6"),
-            ("💾  Save", self.save_file, "Save (Ctrl+S)", "#d97706", "#ffffff", "#f59e0b"),
-            None,
-            ("🗔  Form", self.new_form, "New blank form + .vform (GUI)", "#db2777", "#ffffff", "#ec4899"),
-            ("🔄  Sync", self.sync_from_code, "Reload designer from code / .vform", "#4f46e5", "#ffffff", "#6366f1"),
-            None,
-            ("mode", None, "Toggle GUI / Console", "#1e293b", "#f1f5f9", "#334155"),
-        ]
-        for spec in specs:
-            if spec is None:
-                sep = tk.Frame(self.toolbar, width=1, height=22, bg=theme.get("form_border", "#64748b"))
-                sep.pack(side=tk.LEFT, padx=8, pady=10)
+        """Rebuild template-style action pills; keep brand (◆ Vertex) on the left."""
+        for w in list(self.toolbar.winfo_children()):
+            if getattr(w, "_v_brand", False):
                 continue
-            label, cmd, tip, bg, fg, hbg = spec
-            if label == "mode":
-                label = "🖥  GUI" if self.gui_mode else "💻  Console"
-                cmd = self.toggle_mode
-                if self.gui_mode:
-                    bg, hbg = "#2563eb", "#3b82f6"
-                else:
-                    bg, hbg = "#475569", "#64748b"
-            b = tk.Button(
-                self.toolbar, text=label, command=cmd,
-                bg=bg, fg=fg, activebackground=hbg, activeforeground=fg,
-                relief=tk.FLAT, borderwidth=0, padx=14, pady=7,
-                font=("Segoe UI", 9, "bold"), cursor="hand2",
-                highlightthickness=0, bd=0,
-            )
-            b.pack(side=tk.LEFT, padx=3, pady=6)
-            bind_button_hover(b, theme, normal_bg=bg, normal_fg=fg, hover_bg=hbg, hover_fg=fg)
+            try:
+                txt = ""
+                if w.winfo_class() == "Label":
+                    txt = str(w.cget("text"))
+                if "Vertex" in txt or txt == "◆":
+                    continue
+            except Exception:
+                pass
+            if w.winfo_class() == "Frame" and getattr(w, "_v_brand", False):
+                continue
+            # keep brand frame: marked or first icon frame without toolbar item flag
+            if w.winfo_class() == "Frame" and not getattr(w, "_v_toolbar_item", False):
+                if any(getattr(k, "_v_brand", False) for k in (w.winfo_children() or [])):
+                    continue
+                # brand frame itself
+                if getattr(w, "_v_brand", False):
+                    continue
+                # Heuristic: frame that only holds labels (brand)
+                kids = w.winfo_children()
+                if kids and all(k.winfo_class() == "Label" for k in kids):
+                    continue
+            try:
+                w.destroy()
+            except Exception:
+                pass
+        self.toolbar_buttons = []
+
+        elevated = theme.get("elevated", theme["btn_bg"])
+        muted = theme.get("fg_muted", theme["toolbar_fg"])
+        border = theme.get("form_border", "#2a3344")
+
+        def _sep():
+            s = tk.Frame(self.toolbar, width=1, height=22, bg=border)
+            s._v_toolbar_item = True
+            s.pack(side=tk.LEFT, padx=8, pady=12)
+
+        def _add(text, cmd, bg, fg, hover, tip="", side=tk.LEFT):
+            b = soft_button(self.toolbar, text, command=cmd, bg=bg, fg=fg,
+                            hover=hover, padx=12, pady=7)
+            b._v_toolbar_item = True
+            b.pack(side=side, padx=3, pady=8)
             self.toolbar_buttons.append(b)
             if tip:
-                def _st_enter(e, t=tip):
-                    self.status(t)
-                def _st_leave(e):
-                    self.status("Ready")
-                b.bind("<Enter>", _st_enter, add="+")
-                b.bind("<Leave>", _st_leave, add="+")
                 ToolTip(b, tip)
-            if "GUI" in label or "Console" in label:
-                self.mode_btn = b
+            return b
 
+        _add("  Compile  ", self.compile_file, theme["accent"], "#ffffff",
+             "#60a5fa", "Compile (F5)")
+        _add("  ▶ Run  ", self.run_program, "#15803d", "#ffffff", "#22c55e", "Run (F6)")
+        _sep()
+        _add("  New  ", self.new_file, elevated, theme["fg"], "#2c3648", "New (Ctrl+N)")
+        _add("  Open  ", self.open_file, elevated, theme["fg"], "#2c3648", "Open (Ctrl+O)")
+        _add("  Save  ", self.save_file, "#b45309", "#ffffff", "#f59e0b", "Save (Ctrl+S)")
+        _sep()
+        _add("  Form  ", self.new_form, "#db2777", "#ffffff", "#ec4899", "New form")
+        _add("  Sync  ", self.sync_from_code, "#4f46e5", "#ffffff", "#6366f1", "Sync from code")
+        _sep()
+        if self.gui_mode:
+            self.mode_btn = _add("  GUI  ", self.toggle_mode, "#1e3a5f", "#60a5fa", "#2563eb",
+                                 "Toggle GUI / Console", side=tk.RIGHT)
+        else:
+            self.mode_btn = _add("  Console  ", self.toggle_mode, elevated, muted, "#2c3648",
+                                 "Toggle GUI / Console", side=tk.RIGHT)
+        # pack mode to the right
+        try:
+            self.mode_btn.pack_forget()
+            self.mode_btn.pack(side=tk.RIGHT, padx=12, pady=8)
+        except Exception:
+            pass
 
     def _configure_tags(self, theme):
         self.editor.tag_config("keyword", foreground=theme["keyword"]["fg"],
-                               font=("Consolas",12,"bold" if theme["keyword"].get("bold") else "normal"))
+                             font=("Consolas",12,"bold" if theme["keyword"].get("bold") else "normal"))
         self.editor.tag_config("flow", foreground=theme["flow"]["fg"], font=("Consolas",12,"bold"))
         self.editor.tag_config("type", foreground=theme["type"]["fg"])
         self.editor.tag_config("string", foreground=theme["string"]["fg"])
@@ -2220,11 +2352,21 @@ class VertexIDE:
     def _select_tool(self, ctype):
         self.palette_tool = ctype
         theme = THEMES[self.current_theme]
-        for t, b in self.palette_btns.items():
-            if t == ctype:
-                b.config(bg=theme.get("accent", theme["splash_fg"]), fg="#ffffff")
-            else:
-                b.config(bg=theme["btn_bg"], fg=theme["btn_fg"])
+        border = theme.get("form_border", "#2a3344")
+        elevated = theme.get("elevated", theme["btn_bg"])
+        for t, cell in self.palette_btns.items():
+            try:
+                if t == ctype:
+                    cell.configure(highlightbackground=theme["accent"], highlightthickness=2,
+                                   bg=theme.get("select_bg", elevated))
+                    for ch in cell.winfo_children():
+                        ch.configure(bg=theme.get("select_bg", elevated))
+                else:
+                    cell.configure(highlightbackground=border, highlightthickness=1, bg=elevated)
+                    for ch in cell.winfo_children():
+                        ch.configure(bg=elevated)
+            except Exception:
+                pass
         self.status(f"Tool: {ctype}")
 
 
@@ -4139,17 +4281,19 @@ class VertexIDE:
         self.gui_mode = not self.gui_mode
         self.config["gui_app"] = self.gui_mode
         save_config(self.config)
+        theme = THEMES[self.current_theme]
         if hasattr(self, "mode_btn"):
-            label = "🖥  GUI" if self.gui_mode else "💻  Console"
-            kw = {"text": label, "relief": tk.FLAT}
-            bg = getattr(self.mode_btn, "_v_normal_bg", None)
-            fg = getattr(self.mode_btn, "_v_normal_fg", None)
-            if bg:
-                kw["bg"] = bg
-            if fg:
-                kw["fg"] = fg
-            self.mode_btn.config(**kw)
-        self._update_ui_mode()
+            try:
+                if self.gui_mode:
+                    self.mode_btn.configure(text="  GUI  ", bg="#1e3a5f", fg="#60a5fa")
+                    self.mode_btn._bg, self.mode_btn._hover = "#1e3a5f", "#2563eb"
+                else:
+                    elevated = theme.get("elevated", theme["btn_bg"])
+                    muted = theme.get("fg_muted", theme["toolbar_fg"])
+                    self.mode_btn.configure(text="  Console  ", bg=elevated, fg=muted)
+                    self.mode_btn._bg, self.mode_btn._hover = elevated, "#2c3648"
+            except Exception:
+                pass
         self.status("Mode: " + ("GUI" if self.gui_mode else "Console"))
 
 
