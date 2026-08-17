@@ -1,0 +1,94 @@
+{----------------------------------------------------------------------------}
+{ Vertex – Sine wave (PaintDemo-style: draw only on button click)            }
+{----------------------------------------------------------------------------}
+Import "vcl.vtx";
+
+Enter SineWave;
+
+Var
+  hDraw: HWND;
+  cx: Integer;
+  cy: Integer;
+  i: Integer;
+  x: Integer;
+  y: Integer;
+  prevX: Integer;
+  prevY: Integer;
+  t: Real;
+  s: Real;
+  r: Real;
+
+Proc OnBtn(hCtrl: HWND);
+Run
+  { Same pattern as PaintDemo Clear — always draw, no HWND test }
+  CanvasBegin(MainWindow);
+  CanvasClear(ColorRGB(255, 255, 255));
+
+  { grid }
+  SetPenColor(ColorRGB(200, 205, 215));
+  SetPenWidth(1);
+  i <- 50;
+  While i <= 590 Do
+  Run
+    CanvasMoveTo(i, 50);
+    CanvasLineTo(i, 430);
+    i <- i + 40;
+  Stop;
+  i <- 50;
+  While i <= 430 Do
+  Run
+    CanvasMoveTo(50, i);
+    CanvasLineTo(590, i);
+    i <- i + 40;
+  Stop;
+
+  { axes }
+  cx <- 320;
+  cy <- 240;
+  SetPenColor(ColorRGB(0, 0, 0));
+  SetPenWidth(2);
+  CanvasMoveTo(50, cy);
+  CanvasLineTo(590, cy);
+  CanvasMoveTo(cx, 50);
+  CanvasLineTo(cx, 430);
+
+  { sine — blue }
+  SetPenColor(ColorRGB(0, 0, 200));
+  SetPenWidth(3);
+  prevX <- -1;
+  prevY <- -1;
+  i <- 0;
+  While i <= 540 Do
+  Run
+    t <- (i * 1.0) / 540.0;
+    Asm "r = sin(t * 2.0 * 3.14159265 * 2.0);";
+    s <- r;
+    x <- 50 + i;
+    y <- cy - Trunc(s * 120.0);
+    If prevX >= 0 Then
+    Run
+      CanvasMoveTo(prevX, prevY);
+      CanvasLineTo(x, y);
+    Stop;
+    prevX <- x;
+    prevY <- y;
+    i <- i + 2;
+  Stop;
+
+  SetPenColor(ColorRGB(0, 0, 0));
+  CanvasTextOut(50, 20, "y = sin(x)  click Draw if needed");
+  CanvasEnd();
+Stop;
+
+Run
+  Window(640, 480, 80, 60);
+  SetWindowTitle("Vertex - Sine wave");
+  SetFormColor(ColorRGB(255, 255, 255));
+
+  hDraw <- Button(MainWindow, 100, 30, 10, 10);
+  SetText(hDraw, "Draw");
+  OnClick(@OnBtn);
+
+  RunApp();
+Stop
+Exit.

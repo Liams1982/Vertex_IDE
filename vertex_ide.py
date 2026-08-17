@@ -1023,12 +1023,12 @@ class VertexIDE:
         self.root.bind("<Control-Z>", lambda e: self.undo())
         self.root.bind("<Control-y>", lambda e: self.redo())
         self.root.bind("<Control-Y>", lambda e: self.redo())
-        self.root.bind("<Control-x>", lambda e: self.cut())
-        self.root.bind("<Control-X>", lambda e: self.cut())
+        self.root.bind("<Control-x>", lambda e: self.cut(e))
+        self.root.bind("<Control-X>", lambda e: self.cut(e))
         self.root.bind("<Control-c>", lambda e: self.copy())
         self.root.bind("<Control-C>", lambda e: self.copy())
-        self.root.bind("<Control-v>", lambda e: self.paste())
-        self.root.bind("<Control-V>", lambda e: self.paste())
+        self.root.bind("<Control-v>", lambda e: self.paste(e))
+        self.root.bind("<Control-V>", lambda e: self.paste(e))
         self.root.bind("<Control-a>", lambda e: self.select_all())
         self.root.bind("<Control-A>", lambda e: self.select_all())
 
@@ -1137,6 +1137,11 @@ class VertexIDE:
 
         self.editor.bind("<KeyPress>", self._on_key_press)
         self.editor.bind("<KeyRelease>", self._on_key_release)
+        self.editor.bind("<Control-v>", self.paste)
+        self.editor.bind("<Control-V>", self.paste)
+        self.editor.bind("<Control-x>", self.cut)
+        self.editor.bind("<Control-X>", self.cut)
+
 
         def _accel_undo(event=None):
             self.undo()
@@ -1615,7 +1620,7 @@ class VertexIDE:
         self._apply_editor_text(restored, mark_dirty=True)
         self.status("Redo restored last undo  |  Redo left: %d" % len(self._redo_stack))
 
-    def cut(self):
+    def cut(self, event=None):
         try:
             self._push_undo_snapshot()
             self.editor.event_generate("<<Cut>>")
@@ -1623,6 +1628,7 @@ class VertexIDE:
             self._last_snapshot = self.editor.get("1.0", "end-1c")
         except Exception:
             pass
+        return "break"
 
     def copy(self):
         try:
@@ -1630,14 +1636,37 @@ class VertexIDE:
         except Exception:
             pass
 
-    def paste(self):
+    def paste(self, event=None):
+        """Paste once only. Return 'break' so Tk does not paste a second time."""
         try:
             self._push_undo_snapshot()
-            self.editor.event_generate("<<Paste>>")
+            try:
+                clip = self.root.clipboard_get()
+            except Exception:
+                clip = ""
+            if clip:
+                try:
+                    self.editor.delete("sel.first", "sel.last")
+                except Exception:
+                    pass
+                self.editor.insert(tk.INSERT, clip)
             self._mark_dirty(True)
+            after = self.editor.get("1.0", "end-1c")
+            # If paste created a second full program, keep the first only
+            fixed = self._first_program_only(after)
+            if fixed != after and self._count_programs(after) > 1:
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", fixed)
+                try:
+                    self.status("Paste: removed duplicate program block")
+                except Exception:
+                    pass
             self._last_snapshot = self.editor.get("1.0", "end-1c")
+            self.root.after(10, lambda: highlight(self.editor))
+            self.update_line_numbers()
         except Exception:
             pass
+        return "break"
 
     def select_all(self):
         try:
@@ -4022,14 +4051,11 @@ class VertexIDE:
             prev = getattr(self, "_prev_tab_index", None)
             self._prev_tab_index = current
 
-            # Leaving Form Designer → write control lines into code + .vform
+            # Leaving Form Designer → snapshot .vform only (never rewrite .vtx here)
             if prev is not None and hasattr(self, "design_tab_index") and prev == self.design_tab_index:
                 if current != self.design_tab_index:
                     try:
-                        if not self._code_looks_duplicated():
-                            self._flush_designer_to_storage()
-                        else:
-                            self._autosave_vform()
+                        self._autosave_vform()
                     except Exception:
                         pass
 
@@ -4475,9 +4501,29 @@ class VertexIDE:
         """True if buffer contains more than one program terminator (catastrophic double)."""
         try:
             src = self.editor.get("1.0", "end-1c")
-            return src.count("Exit.") > 1 or src.count("\nEnter ") > 1
+            return self._count_programs(src) > 1
         except Exception:
             return False
+
+    def _count_programs(self, src):
+        if not src:
+            return 0
+        exits = len(re.findall(r'(?m)^\s*Exit\s*\.', src))
+        enters = len(re.findall(r'(?m)^\s*Enter\s+\w+', src))
+        return max(exits, enters)
+
+    def _first_program_only(self, src):
+        """If multiple Enter/Exit programs were concatenated, keep the first only."""
+        if not src or self._count_programs(src) <= 1:
+            return src
+        lines = src.splitlines(keepends=True)
+        out = []
+        for line in lines:
+            out.append(line)
+            if re.match(r'^\s*Exit\s*\.', line):
+                break
+        return "".join(out)
+
 
     def _on_designer_tab(self):
         """True if Form Designer tab is currently selected."""
@@ -4489,14 +4535,7 @@ class VertexIDE:
             return False
 
     def save_file(self):
-        """Save .vtx from the editor only.
-        Never regenerate or rewrite the program when the user is on the Code tab."""
-        # Designer may update geometry lines only if code is not already duplicated
-        if self._on_designer_tab() and not self._code_looks_duplicated():
-            try:
-                self._flush_designer_to_storage()
-            except Exception:
-                pass
+        """Save editor buffer only. Never rewrite/regenerate source on Save."""
         if self.current_file:
             self._save_to(self.current_file)
         else:
@@ -4506,17 +4545,22 @@ class VertexIDE:
         path = filedialog.asksaveasfilename(defaultextension=".vtx",
                                             filetypes=[("Vertex files", "*.vtx")])
         if path:
-            if self._on_designer_tab():
-                try:
-                    self._flush_designer_to_storage()
-                except Exception:
-                    pass
             self._save_to(path)
 
     def _save_to(self, path):
         """Write editor buffer to disk. Does NOT regenerate Enter/Exit or form code."""
         try:
             content = self.editor.get("1.0", "end-1c")
+            # Safety: if buffer was already doubled, persist only the first program
+            fixed = self._first_program_only(content)
+            if fixed != content:
+                content = fixed
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", content)
+                try:
+                    self.status("Removed duplicate program block before save")
+                except Exception:
+                    pass
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             self.current_file = path
