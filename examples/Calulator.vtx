@@ -1,5 +1,5 @@
 {----------------------------------------------------------------------------}
-{ Vertex Calculator - digits, ., operators, clean integer display            }
+{ Vertex Calculator - one click per digit, decimal, operators, clean display }
 {----------------------------------------------------------------------------}
 Import "vcl.vtx";
 
@@ -19,9 +19,13 @@ Var
 Func FormatNumber(n: Real): String;
 Var
   t: Integer;
+  d: Real;
 Run
   t <- Trunc(n);
-  If (n - t = 0.0) Or (t - n = 0.0) Then
+  d <- n - t;
+  If d < 0.0 Then
+    d <- 0.0 - d;
+  If d < 0.0000001 Then
     FormatNumber <- IntToStr(t)
   Else
     FormatNumber <- FloatToStr(n);
@@ -35,7 +39,6 @@ Var
   result: Real;
 Run
   currentText <- GetText(hDisplay);
-
   digit <- "";
   If hCtrl = hBtn0 Then digit <- "0";
   If hCtrl = hBtn1 Then digit <- "1";
@@ -48,11 +51,12 @@ Run
   If hCtrl = hBtn8 Then digit <- "8";
   If hCtrl = hBtn9 Then digit <- "9";
 
+  { Digits — one click shows the number immediately }
   If digit <> "" Then
   Run
     If ClearDisplay = 1 Then
     Run
-  SetText(hDisplay, "0");
+      SetText(hDisplay, digit);
       ClearDisplay <- 0;
       HasDecimal <- 0;
     Stop
@@ -116,7 +120,7 @@ Run
   If hCtrl = hBtnEqual Then
   Run
     num <- StrToFloat(GetText(hDisplay));
-    result <- 0.0;
+    result <- num;
     If Operation = 1 Then
       result <- PreviousValue + num
     Else If Operation = 2 Then
@@ -132,9 +136,7 @@ Run
         ShowMessage("Cannot divide by zero!", "Error");
         result <- 0.0;
       Stop;
-    Stop
-    Else
-      result <- num;
+    Stop;
     SetText(hDisplay, FormatNumber(result));
     PreviousValue <- result;
     Operation <- 0;
@@ -153,7 +155,7 @@ Run
 Stop;
 
 Run
-  Window(217, 282, 120, 100);
+  Window(220, 290, 120, 100);
   SetWindowTitle("Vertex Calculator");
   SetFormColor(ColorRGB(240, 240, 245));
 
