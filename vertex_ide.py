@@ -12,7 +12,7 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 APP_NAME = "Vertex IDE"
-APP_VERSION = "1.6"
+APP_VERSION = "1.7.2"
 
 CONFIG_FILE = "vertex_ide.json"
 DEFAULT_CONFIG = {
@@ -934,6 +934,7 @@ class VertexIDE:
         self._redo_stack = []
         self._undo_max = 10
         self._dirty = False
+        self._allow_designer_code_write = False  # designer → .vform only (Delphi-style)
         self.current_vform_path = None  # Delphi-style .vform next to .vtx
         self._last_snapshot = None     # text before last key change
         self._suspend_undo = False     # skip push during undo/redo apply
@@ -1050,6 +1051,7 @@ class VertexIDE:
 
         # ---------- Help menu ----------
         help_menu = tk.Menu(menubar, tearoff=0, bg=theme["toolbar_bg"], fg=theme["toolbar_fg"])
+        help_menu.add_command(label="How the IDE works…", command=self.show_ide_guide)
         help_menu.add_command(label="Documentation…", command=self.open_documentation)
         help_menu.add_command(label="Shortcuts", command=self.show_shortcuts)
         help_menu.add_separator()
@@ -2842,9 +2844,22 @@ class VertexIDE:
         if self._form_resize:
             self._form_resize = None
             self.form_canvas.config(cursor="arrow")
-            self._apply_form_size()
+            try:
+                self.form_w_var.set(str(int(self.form_width)))
+                self.form_h_var.set(str(int(self.form_height)))
+            except Exception:
+                pass
+            try:
+                self.form_canvas.config(width=int(self.form_width), height=int(self.form_height))
+            except Exception:
+                pass
+            self._redraw_all()
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                pass
 
-    # ---------- Designer ----------
+
     def _select_tool(self, ctype):
         self.palette_tool = ctype
         theme = THEMES[self.current_theme]
@@ -2874,6 +2889,17 @@ class VertexIDE:
             return True
         try:
             if getattr(self, "design_controls", None) and len(self.design_controls) > 0:
+                return True
+        except Exception:
+            pass
+        try:
+            if getattr(self, "current_vform_path", None):
+                return True
+        except Exception:
+            pass
+        try:
+            # Designer was used (non-default size) or form tab exists
+            if int(getattr(self, "form_width", 0) or 0) not in (0, 480) or int(getattr(self, "form_height", 0) or 0) not in (0, 320):
                 return True
         except Exception:
             pass
@@ -2985,16 +3011,31 @@ class VertexIDE:
 
     def _save_vform_disk_only(self, path):
         """Write .vform JSON to disk without changing the code editor at all."""
-        if not path or not self._is_gui_project():
+        if not path:
             return False
         try:
+            folder = os.path.dirname(path)
+            if folder and not os.path.isdir(folder):
+                os.makedirs(folder, exist_ok=True)
+            try:
+                if hasattr(self, "form_w_var"):
+                    self.form_width = max(100, int(self.form_w_var.get() or self.form_width or 480))
+                if hasattr(self, "form_h_var"):
+                    self.form_height = max(80, int(self.form_h_var.get() or self.form_height or 320))
+            except Exception:
+                pass
             doc = self.form_to_document()
             with open(path, "w", encoding="utf-8") as f:
                 json.dump(doc, f, indent=2)
             self.current_vform_path = path
             return True
-        except Exception:
+        except Exception as e:
+            try:
+                self.status(f"vform write failed: {e}")
+            except Exception:
+                pass
             return False
+
 
     def save_vform(self, path=None, silent=False):
         """Write layout to .vform (JSON). Like saving a Delphi .dfm.
@@ -3048,39 +3089,121 @@ class VertexIDE:
             messagebox.showerror("Open Form", str(e))
             return False
 
+
     def _ensure_vform_import_comment(self, vform_path):
-        """Insert a Delphi-style form link comment near the top of the .vtx unit."""
+        """Ensure {$FORM} link + ApplyVForm(...) before RunApp (layout from .vform at runtime).
+        Does not rewrite handlers or control creation lines."""
         if not hasattr(self, "editor"):
             return
-        if not self._is_gui_project():
-            return
         rel = os.path.basename(vform_path)
-        marker = "{$FORM "
-        line = '{$FORM "' + rel + '"}  { layout resource — edit in Form Designer }'
+        form_line = '{$FORM "' + rel + '"}  { layout resource — edit in Form Designer }'
         source = self.editor.get("1.0", "end-1c")
         lines = source.splitlines()
-        # update existing
-        for i, ln in enumerate(lines):
+        changed = False
+
+        # 1) {$FORM} near top
+        form_idx = None
+        for idx, ln in enumerate(lines):
             if "{$FORM" in ln or "$FORM" in ln:
-                lines[i] = line
-                self.editor.delete("1.0", tk.END)
-                self.editor.insert("1.0", "\n".join(lines))
-                return
-        # insert after first Import or at top
-        insert_at = 0
-        for i, ln in enumerate(lines):
-            if ln.strip().startswith("Import"):
-                insert_at = i + 1
-        lines.insert(insert_at, line)
-        self.editor.delete("1.0", tk.END)
-        self.editor.insert("1.0", "\n".join(lines))
+                form_idx = idx
+                if lines[idx] != form_line:
+                    lines[idx] = form_line
+                    changed = True
+                break
+        if form_idx is None:
+            insert_at = 0
+            for idx, ln in enumerate(lines):
+                s = ln.strip()
+                if s.startswith("Import ") or s.startswith("{") or s.startswith("//") or s == "":
+                    insert_at = idx + 1
+                    continue
+                break
+            lines.insert(insert_at, form_line)
+            changed = True
+
+        # 2) ApplyVForm before RunApp (once)
+        has_apply = any("ApplyVForm" in ln for ln in lines)
+        if not has_apply:
+            for idx, ln in enumerate(lines):
+                if re.search(r"\bRunApp\s*\(", ln):
+                    indent = re.match(r"^(\s*)", ln).group(1)
+                    lines.insert(idx, indent + 'ApplyVForm("' + rel + '");')
+                    changed = True
+                    break
+
+        if changed:
+            self.editor.delete("1.0", tk.END)
+            self.editor.insert("1.0", "\n".join(lines))
+            try:
+                self.root.after(20, lambda: highlight(self.editor))
+            except Exception:
+                pass
+
+
+    def _persist_form_resource(self, silent=False):
+        """Delphi-style: write layout to .vform and ensure {$FORM \"...\"} link in source.
+        Never rewrites control creation or event handlers."""
+        # 1) Sync designer fields into memory
+        try:
+            if hasattr(self, "form_w_var"):
+                self.form_width = max(100, int(self.form_w_var.get() or self.form_width or 480))
+            if hasattr(self, "form_h_var"):
+                self.form_height = max(80, int(self.form_h_var.get() or self.form_height or 320))
+            if hasattr(self, "form_title_var") and (self.form_title_var.get() or "").strip():
+                self.form_title = self.form_title_var.get().strip()
+        except Exception:
+            pass
+
+        # 2) Need a path (unit must be saved once)
+        path = self.current_vform_path or self._vform_path_for_unit()
+        if not path:
+            if not silent:
+                try:
+                    self.status("Save the .vtx once so .vform can be created next to it")
+                except Exception:
+                    pass
+            return False
+
+        # 3) Write .vform (full layout JSON)
+        ok = False
+        try:
+            ok = bool(self._save_vform_disk_only(path))
+        except Exception as e:
+            if not silent:
+                try:
+                    self.status(f"vform save failed: {e}")
+                except Exception:
+                    pass
+            return False
+
+        # 4) Ensure {$FORM "..."} link in editor (one line only — does not touch handlers)
+        try:
+            self._ensure_vform_import_comment(path)
+        except Exception:
+            pass
+
+        # 5) Refresh Form tab preview
+        try:
+            self._refresh_vform_tab()
+        except Exception:
+            pass
+
+        if ok and not silent:
+            try:
+                self.status(f"Form resource saved: {os.path.basename(path)}")
+            except Exception:
+                pass
+        return ok
 
     def _autosave_vform(self):
-        if not self._is_gui_project():
-            return
-        path = self.current_vform_path or self._vform_path_for_unit()
-        if path:
-            self._save_vform_disk_only(path)
+        """Silent persist of .vform layout resource."""
+        try:
+            self._persist_form_resource(silent=True)
+        except Exception:
+            path = self.current_vform_path or self._vform_path_for_unit()
+            if path:
+                self._save_vform_disk_only(path)
+
 
     def new_form(self):
         self.clear_form()
@@ -3120,6 +3243,18 @@ class VertexIDE:
             self.prop_vars[k].set("")
 
     def _apply_form_size(self):
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         try:
             w = int(self.form_w_var.get())
             h = int(self.form_h_var.get())
@@ -3735,6 +3870,18 @@ class VertexIDE:
 
     def _live_sync_all_controls(self):
         """Update form lines only while the Designer tab is active."""
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         self._live_sync_job = None
         if getattr(self, "_suspend_live_sync", False):
             return
@@ -3753,6 +3900,18 @@ class VertexIDE:
 
     def _sync_form_header_to_code(self):
         """Patch Window(...) and SetWindowTitle in editor to match designer."""
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         try:
             source = self.editor.get("1.0", "end-1c")
             lines = source.splitlines()
@@ -3776,6 +3935,18 @@ class VertexIDE:
             pass
 
     def _update_code_for_property(self, ctrl, prop, value):
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
 
         if prop == "name":
             old_name = ctrl.name
@@ -3901,6 +4072,18 @@ class VertexIDE:
             return
 
     def _update_form_code(self, prop, value):
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         if prop == "title":
             new_line = f'  SetWindowTitle("{value}");'
             pattern = r'^(\s*)SetWindowTitle\s*\(\s*".*?"\s*\)\s*;'
@@ -3929,6 +4112,18 @@ class VertexIDE:
     def _update_code_for_control(self, ctrl):
         """Write this control's geometry into the .vtx source.
         Only while Form Designer tab is active — never when user is editing Code."""
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         try:
             if not self._on_designer_tab():
                 return
@@ -4051,6 +4246,18 @@ class VertexIDE:
 
 
     def _replace_line_in_code(self, old_pattern, new_line, flags=0):
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         source = self.editor.get("1.0", "end-1c")
         lines = source.splitlines()
         modified = False
@@ -4068,6 +4275,18 @@ class VertexIDE:
         return False
 
     def _insert_code_for_control(self, ctrl):
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         if not self._on_designer_tab():
             return
         if self._code_looks_duplicated():
@@ -4537,6 +4756,18 @@ class VertexIDE:
 
     def _flush_designer_to_storage(self):
         """Persist designer geometry to .vtx only on Designer tab; always may snapshot .vform."""
+
+        # Layout resource model: designer writes .vform only (like Delphi .dfm).
+        # Do not rewrite hand-written .vtx logic unless explicitly allowed.
+        if not getattr(self, "_allow_designer_code_write", False):
+            try:
+                self._persist_form_resource(silent=True)
+            except Exception:
+                try:
+                    self._autosave_vform()
+                except Exception:
+                    pass
+            return
         try:
             if not self._is_gui_project() and not getattr(self, "design_controls", None):
                 return
@@ -5014,11 +5245,12 @@ class VertexIDE:
             return False
 
     def save_file(self):
-        """Save editor buffer only. Never rewrite/regenerate source on Save."""
+        """Save .vtx as typed + .vform layout resource (Delphi unit + dfm model)."""
         if self.current_file:
             self._save_to(self.current_file)
         else:
             self.save_as_file()
+
 
     def save_as_file(self):
         path = filedialog.asksaveasfilename(defaultextension=".vtx",
@@ -5027,19 +5259,15 @@ class VertexIDE:
             self._save_to(path)
 
     def _save_to(self, path):
-        """Write editor buffer to disk. Does NOT regenerate Enter/Exit or form code."""
+        """Write editor buffer to .vtx, then write matching .vform layout resource."""
         try:
             content = self.editor.get("1.0", "end-1c")
-            # Safety: if buffer was already doubled, persist only the first program
-            fixed = self._first_program_only(content)
-            if fixed != content:
-                content = fixed
-                self.editor.delete("1.0", tk.END)
-                self.editor.insert("1.0", content)
-                try:
-                    self.status("Removed duplicate program block before save")
-                except Exception:
-                    pass
+            if hasattr(self, "_first_program_only"):
+                fixed = self._first_program_only(content)
+                if fixed != content:
+                    content = fixed
+                    self.editor.delete("1.0", tk.END)
+                    self.editor.insert("1.0", content)
             with open(path, "w", encoding="utf-8") as f:
                 f.write(content)
             self.current_file = path
@@ -5050,21 +5278,26 @@ class VertexIDE:
             except Exception:
                 pass
 
-            # Optional .vform snapshot — never mutates the editor
-            if self._is_gui_project():
-                self.current_vform_path = self._vform_path_for_unit(path)
+            # Pair .vform with this unit (layout only)
+            self.current_vform_path = self._vform_path_for_unit(path)
+            vform_ok = False
+            try:
+                vform_ok = bool(self._persist_form_resource(silent=True))
+            except Exception:
                 try:
-                    self._save_vform_disk_only(self.current_vform_path)
+                    vform_ok = bool(self._save_vform_disk_only(self.current_vform_path))
                 except Exception:
-                    pass
-                self.status(f"Saved {os.path.basename(path)}")
+                    vform_ok = False
+
+            base = os.path.basename(path)
+            if vform_ok:
+                self.status(f"Saved {base} + {os.path.basename(self.current_vform_path)}")
             else:
-                self.current_vform_path = None
-                self.status(f"Saved {os.path.basename(path)}")
+                self.status(f"Saved {base}")
         except Exception as e:
             messagebox.showerror("Error", str(e))
 
-    # ---------- Compile / Run ----------
+
     def _append_output(self, text, tag=None):
         self.output_text.config(state=tk.NORMAL)
         self.output_text.insert(tk.END, text, tag if tag else ())
@@ -5076,6 +5309,11 @@ class VertexIDE:
             messagebox.showinfo("No file", "Save your file first.")
             return
         self.save_file()
+        # Ensure .vform is on disk with latest designer layout before build
+        try:
+            self._autosave_vform()
+        except Exception:
+            pass
         source = self.editor.get("1.0","end-1c")
         auto = self.config.get("auto_detect_gui", True)
         use_gui = self.gui_mode if not auto else (self.gui_mode or looks_like_gui(source))
@@ -5572,6 +5810,80 @@ class VertexIDE:
         if hasattr(self, "status_label"):
             self.status_label.config(text=msg)
             self.root.update_idletasks()
+
+    def show_ide_guide(self):
+        """Help -> How the IDE works - full guide window."""
+        theme = THEMES[self.current_theme]
+        win = tk.Toplevel(self.root)
+        win.title("How Vertex IDE Works")
+        win.geometry("720x560")
+        win.minsize(520, 360)
+        win.configure(bg=theme["bg"])
+        try:
+            win.transient(self.root)
+        except Exception:
+            pass
+
+        top = tk.Frame(win, bg=theme["toolbar_bg"], padx=10, pady=8)
+        top.pack(fill=tk.X)
+        tk.Label(
+            top,
+            text="Vertex IDE - User Guide",
+            font=("Segoe UI", 12, "bold"),
+            bg=theme["toolbar_bg"],
+            fg=theme.get("accent", theme["fg"]),
+        ).pack(side=tk.LEFT)
+        tk.Button(
+            top, text="Close", command=win.destroy,
+            bg=theme["btn_bg"], fg=theme["btn_fg"], relief=tk.FLAT, padx=12,
+        ).pack(side=tk.RIGHT)
+
+        body = tk.Frame(win, bg=theme["bg"], padx=8, pady=8)
+        body.pack(fill=tk.BOTH, expand=True)
+        txt = scrolledtext.ScrolledText(
+            body,
+            wrap=tk.WORD,
+            font=("Segoe UI", 10),
+            bg=theme.get("output_bg", theme["bg"]),
+            fg=theme["fg"],
+            insertbackground=theme.get("insertbg", theme["fg"]),
+            relief=tk.FLAT,
+            padx=12,
+            pady=10,
+        )
+        txt.pack(fill=tk.BOTH, expand=True)
+
+        guide = self._ide_guide_text()
+        txt.insert("1.0", guide)
+        txt.config(state=tk.DISABLED)
+        try:
+            txt.focus_set()
+        except Exception:
+            pass
+
+    def _ide_guide_text(self):
+        """Full IDE guide body for Help -> How the IDE works."""
+        return (
+            'VERTEX IDE - HOW EVERYTHING WORKS\n================================\n\nVertex IDE is a code editor plus an optional Form Designer for the Vertex language.\nYou can build GUI apps in pure code with VCL, or use the designer to edit layout\nstored in a .vform file (similar to a Delphi .dfm).\n\n1) MAIN WINDOW LAYOUT\n--------------------\n- Toolbar (top): New, Open, Save, Compile (F5), Run (F6), Settings, the'
+            +
+            'me, GUI mode.\n- Left sidebar: Component Palette and Properties / Events panel.\n- Center tabs: Code (.vtx), Form Designer, Code Explorer, Form (.vform) resource.\n- Output panel (bottom): compiler and run messages.\n- Status bar: file name, cursor position, short status text.\n\n2) CODE EDITOR\n-------------\n- Edit Vertex source: Import, Enter, Var, Proc, Run/Stop, Exit.\n- Syntax highlighting and autoco'
+            +
+            'mplete (words; members after . or ^.).\n- Ctrl+Z/Y undo/redo, Ctrl+X/C/V cut/copy/paste, Ctrl+A select all.\n- Save (Ctrl+S) writes the editor text as-is to the .vtx file.\n- You can build full VCL GUI apps here without using the Form Designer.\n\n3) COMPONENT PALETTE\n-------------------\n- Tools: Button, Edit, Label, Memo, CheckBox, Radio, ListBox, ComboBox,\n  GroupBox, Panel, ComPort, StatusBar, Hyper'
+            +
+            'Term, Timer, SevenSeg, Select.\n- Choose a tool, then click the form canvas to place a control.\n- Select tool: click to select, drag to move, handles to resize.\n- Palette scrolls when the list is long.\n\n4) FORM DESIGNER\n---------------\n- Canvas = main window client area; grid helps alignment.\n- Click empty form area to edit form title, width, height, color.\n- Click a control to edit Name, Caption, '
+            +
+            'Left, Top, Width, Height, Color.\n- Red handles on the form border resize the form.\n\nLayout model (important):\n  - Designer saves layout to a .vform file next to your .vtx.\n  - The .vtx still creates controls in code with default sizes/positions/colors.\n  - At run time ApplyVForm("YourUnit.vform") applies designer layout on top.\n  - Designer does not rewrite your event-handler logic in the code edi'
+            +
+            'tor.\n\n5) .vform AND {$FORM}\n--------------------\n- .vform = JSON layout (form size, control positions, captions, colors).\n- IDE may add: {$FORM "UnitName.vform"} near the top (link for the IDE only).\n- Your code must call ApplyVForm("UnitName.vform") after creating controls\n  and before RunApp - that is what loads .vform at run time.\n\nForm menu:\n  - Save Form (.vform) - write designer state to dis'
+            +
+            'k\n  - Open Form (.vform) - load layout into the designer\n  - Sync from Code - bootstrap designer from Window/Button lines (if no .vform yet)\n  - Generate / Refresh .vform - create/update .vform for the unit\n\n6) PROPERTIES & EVENTS\n---------------------\n- Edit selected form/control fields; Apply updates the designer (.vform on save).\n- Events (OnClick, OnChange, ...) are implemented in Code, e.g. O'
+            +
+            'nClick(@MyProc).\n\n7) CODE EXPLORER\n---------------\n- Lists symbols in the current buffer.\n- Double-click a name to jump to it in the code editor.\n\n8) FORM (.vform) TAB\n-------------------\n- Shows the JSON layout file; Refresh reloads from disk.\n\n9) BUILD & RUN\n-------------\n- F5 Compile: vertexc then g++ (paths in Settings).\n- F6 Run: starts the built .exe.\n- GUI mode / auto-detect selects -mwindo'
+            +
+            'ws and Win32 libraries when needed.\n- Output panel shows build errors and messages.\n\n10) TOOLBAR\n----------\n- New / Open / Save - .vtx (and .vform snapshot for GUI units).\n- Compile / Run / Folder / Settings / Theme / GUI toggle.\n\n11) WORKFLOWS\n------------\nA) Code-only: write Window/Button/logic in the editor; no designer needed.\n\nB) Code + designer:\n   1. Create controls + logic in Code (keep de'
+            +
+            'faults in code).\n   2. Save .vtx once.\n   3. Adjust layout in Form Designer; Save writes .vform.\n   4. ApplyVForm("....vform") before RunApp.\n   5. Compile and Run.\n\n12) SHORTCUTS\n------------\nCtrl+N New   Ctrl+O Open   Ctrl+S Save\nCtrl+Z/Y Undo/Redo   Ctrl+X/C/V Cut/Copy/Paste   Ctrl+A Select All\nF5 Compile   F6 Run\nSee also Help -> Shortcuts.\n'
+        )
 
     def open_documentation(self):
         doc_path = os.path.join(os.getcwd(), "documentation.pdf")
