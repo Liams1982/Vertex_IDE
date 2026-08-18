@@ -576,9 +576,20 @@ def is_frozen():
     """True when running as PyInstaller / cx_Freeze / etc. packaged EXE."""
     return bool(getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"))
 
+def _looks_like_ide_exe(path):
+    """True if path is this IDE (EXE or script) — must never be used as python/vertexc."""
+    if not path:
+        return False
+    name = os.path.basename(str(path)).lower()
+    if "vertex_ide" in name:
+        return True
+    if name in ("vertexide.exe", "vertexide", "vertex_ide.exe", "vertex_ide.py"):
+        return True
+    return False
+
 def app_dir():
     """Directory of the running app (EXE folder when frozen, else script dir)."""
-    if is_frozen():
+    if is_frozen() or _looks_like_ide_exe(sys.executable):
         return os.path.dirname(os.path.abspath(sys.executable))
     try:
         return os.path.dirname(os.path.abspath(__file__))
@@ -586,21 +597,44 @@ def app_dir():
         return os.path.dirname(os.path.abspath(sys.argv[0]))
 
 def find_python_interpreter():
-    """Real Python for running .py helpers. Never return the frozen IDE EXE."""
-    if not is_frozen():
-        return sys.executable
+    """Real CPython for helpers. Never return the Vertex IDE executable."""
     import shutil
-    for name in ("python", "python3", "py"):
+    candidates = []
+    # Prefer known Windows install paths first when frozen / IDE exe
+    if sys.platform == "win32":
+        local = os.environ.get("LOCALAPPDATA", "")
+        for ver in ("Python312", "Python311", "Python310", "Python39"):
+            candidates.append(os.path.join(local, "Programs", "Python", ver, "python.exe"))
+        candidates += [
+            r"C:\Python312\python.exe",
+            r"C:\Python311\python.exe",
+            r"C:\Python310\python.exe",
+        ]
+    if not is_frozen() and not _looks_like_ide_exe(sys.executable):
+        candidates.insert(0, sys.executable)
+    for name in ("python", "python3"):
         found = shutil.which(name)
         if found:
-            # avoid pointing back at ourselves
-            try:
-                if os.path.samefile(found, sys.executable):
-                    continue
-            except Exception:
-                if os.path.abspath(found) == os.path.abspath(sys.executable):
-                    continue
-            return found
+            candidates.append(found)
+    # Avoid `py` launcher — it can resolve poorly next to a frozen EXE
+    seen = set()
+    for cand in candidates:
+        if not cand:
+            continue
+        ap = os.path.abspath(cand)
+        if ap in seen:
+            continue
+        seen.add(ap)
+        if _looks_like_ide_exe(ap):
+            continue
+        try:
+            if os.path.samefile(ap, os.path.abspath(sys.executable)):
+                continue
+        except Exception:
+            if ap == os.path.abspath(sys.executable):
+                continue
+        if os.path.isfile(ap) or shutil.which(cand):
+            return ap if os.path.isfile(ap) else cand
     return None
 
 
@@ -988,6 +1022,8 @@ class VertexIDE:
         edit_menu.add_command(label="Copy", command=self.copy, accelerator="Ctrl+C")
         edit_menu.add_command(label="Paste", command=self.paste, accelerator="Ctrl+V")
         edit_menu.add_separator()
+        edit_menu.add_command(label="Find / Replace…", command=self.show_find_dialog, accelerator="Ctrl+F")
+        edit_menu.add_separator()
         edit_menu.add_command(label="Select All", command=self.select_all, accelerator="Ctrl+A")
         menubar.add_cascade(label="Edit", menu=edit_menu)
 
@@ -1000,6 +1036,8 @@ class VertexIDE:
         # Generate removed — layout lives in .vform + live designer→code sync
         form_menu.add_command(label="Clear Form", command=self.clear_form)
         form_menu.add_command(label="Sync from Code", command=self.sync_from_code)
+        form_menu.add_command(label="Generate / Refresh .vform", command=self._ensure_vform_from_code)
+        form_menu.add_command(label="Show Form Resource Tab", command=self._goto_form_tab)
         menubar.add_cascade(label="Form", menu=form_menu)
 
         # ---------- View menu ----------
@@ -1028,6 +1066,10 @@ class VertexIDE:
         self.root.bind("<Control-c>", lambda e: self.copy())
         self.root.bind("<Control-C>", lambda e: self.copy())
         self.root.bind("<Control-v>", lambda e: self.paste(e))
+        self.root.bind("<Control-f>", lambda e: self.show_find_dialog())
+        self.root.bind("<Control-F>", lambda e: self.show_find_dialog())
+        self.root.bind("<Control-h>", lambda e: self.show_find_dialog(replace=True))
+        self.root.bind("<Control-H>", lambda e: self.show_find_dialog(replace=True))
         self.root.bind("<Control-V>", lambda e: self.paste(e))
         self.root.bind("<Control-a>", lambda e: self.select_all())
         self.root.bind("<Control-A>", lambda e: self.select_all())
@@ -1088,6 +1130,8 @@ class VertexIDE:
         self.output_text.tag_config("error", foreground=theme["error"])
         self.output_text.tag_config("info", foreground=theme["toolbar_fg"])
 
+        self._setup_output_context_menu()
+
         # Main paned
         self.main_pane = tk.PanedWindow(
             self.root, orient=tk.HORIZONTAL,
@@ -1142,6 +1186,8 @@ class VertexIDE:
         self.editor.bind("<Control-x>", self.cut)
         self.editor.bind("<Control-X>", self.cut)
 
+        self._setup_editor_context_menu()
+
 
         def _accel_undo(event=None):
             self.undo()
@@ -1183,7 +1229,8 @@ class VertexIDE:
         title_entry.bind("<FocusOut>", lambda e: self._apply_form_size())
 
         # Width
-        tk.Label(design_top, text="W:", bg=theme["toolbar_bg"], fg=theme["toolbar_fg"]).pack(side=tk.LEFT, padx=(8,0))
+        tk.Label(design_top, text="Client W:", bg=theme["toolbar_bg"], fg=theme["toolbar_fg"],
+                 font=("Segoe UI", 8)).pack(side=tk.LEFT, padx=(8,0))
         self.form_w_var = tk.StringVar(value=str(self.form_width))
         self.form_w_var.trace_add("write", lambda *args: self._apply_form_size())
         w_entry = tk.Entry(design_top, textvariable=self.form_w_var, width=5,
@@ -1193,7 +1240,8 @@ class VertexIDE:
         w_entry.bind("<FocusOut>", lambda e: self._apply_form_size())
 
         # Height
-        tk.Label(design_top, text="H:", bg=theme["toolbar_bg"], fg=theme["toolbar_fg"]).pack(side=tk.LEFT)
+        tk.Label(design_top, text="H:", bg=theme["toolbar_bg"], fg=theme["toolbar_fg"],
+                 font=("Segoe UI", 8)).pack(side=tk.LEFT)
         self.form_h_var = tk.StringVar(value=str(self.form_height))
         self.form_h_var.trace_add("write", lambda *args: self._apply_form_size())
         h_entry = tk.Entry(design_top, textvariable=self.form_h_var, width=5,
@@ -1481,6 +1529,41 @@ class VertexIDE:
         explorer_tab = tk.Frame(self.notebook, bg=theme["bg"])
         self.notebook.add(explorer_tab, text="  Code Explorer  ")
 
+        # Form (.vform) resource tab — auto-filled for GUI projects
+        form_res_tab = tk.Frame(self.notebook, bg=theme["bg"])
+        self.notebook.add(form_res_tab, text="  Form (.vform)  ")
+        self.form_tab_index = self.notebook.index(form_res_tab)
+        fr_top = tk.Frame(form_res_tab, bg=theme["toolbar_bg"], height=32)
+        fr_top.pack(fill=tk.X)
+        fr_top.pack_propagate(False)
+        tk.Label(fr_top, text="  .vform layout resource", bg=theme["toolbar_bg"],
+                 fg=theme.get("fg_muted", theme["toolbar_fg"]),
+                 font=("Segoe UI", 9)).pack(side=tk.LEFT, padx=8)
+        soft_button(fr_top, "  Refresh  ", command=self._refresh_vform_tab,
+                    bg=theme.get("elevated", theme["btn_bg"]), fg=theme["fg"],
+                    hover=theme.get("btn_hover", "#2c3648"), padx=10, pady=4).pack(side=tk.LEFT, padx=4, pady=4)
+        soft_button(fr_top, "  Generate from Code  ", command=self._ensure_vform_from_code,
+                    bg="#0d9488", fg="#ffffff", hover="#14b8a6", padx=10, pady=4).pack(side=tk.LEFT, padx=4, pady=4)
+        soft_button(fr_top, "  Open Designer  ", command=self._goto_designer_tab,
+                    bg="#4f46e5", fg="#ffffff", hover="#6366f1", padx=10, pady=4).pack(side=tk.LEFT, padx=4, pady=4)
+        vf_body = tk.Frame(form_res_tab, bg=theme["bg"])
+        vf_body.pack(fill=tk.BOTH, expand=True)
+        vf_scroll_y = tk.Scrollbar(vf_body, orient=tk.VERTICAL)
+        vf_scroll_x = tk.Scrollbar(vf_body, orient=tk.HORIZONTAL)
+        self.vform_text = tk.Text(
+            vf_body, font=("Consolas", 10), relief=tk.FLAT, bd=0, padx=10, pady=8,
+            bg=theme["bg"], fg=theme["fg"], insertbackground=theme["insertbg"],
+            wrap=tk.NONE,
+            yscrollcommand=vf_scroll_y.set,
+            xscrollcommand=vf_scroll_x.set)
+        vf_scroll_y.config(command=self.vform_text.yview)
+        vf_scroll_x.config(command=self.vform_text.xview)
+        vf_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        vf_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        self.vform_text.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        self.vform_text.insert("1.0", "{ no .vform loaded — open a GUI unit or click Generate from Code }")
+        self.vform_text.config(state=tk.DISABLED)
+
         explorer_frame = tk.Frame(explorer_tab, bg=theme["bg"])
         explorer_frame.pack(fill=tk.BOTH, expand=True, padx=4, pady=4)
 
@@ -1620,6 +1703,381 @@ class VertexIDE:
         self._apply_editor_text(restored, mark_dirty=True)
         self.status("Redo restored last undo  |  Redo left: %d" % len(self._redo_stack))
 
+
+
+    def show_find_dialog(self, replace=False):
+        """Find / Replace dialog for the code editor."""
+        if getattr(self, "_find_win", None) is not None:
+            try:
+                self._find_win.lift()
+                self._find_win.focus_force()
+                return
+            except Exception:
+                self._find_win = None
+
+        theme = THEMES.get(self.current_theme, THEMES["dark"])
+        win = tk.Toplevel(self.root)
+        self._find_win = win
+        win.title("Find / Replace")
+        win.configure(bg=theme.get("surface", theme["toolbar_bg"]))
+        win.resizable(False, False)
+        win.transient(self.root)
+        try:
+            win.geometry("+%d+%d" % (self.root.winfo_rootx() + 120, self.root.winfo_rooty() + 120))
+        except Exception:
+            pass
+
+        tk.Label(win, text="Find:", bg=theme.get("surface", theme["toolbar_bg"]),
+                 fg=theme["fg"], font=("Segoe UI", 9)).grid(row=0, column=0, sticky="w", padx=10, pady=(12, 4))
+        find_var = tk.StringVar(value=getattr(self, "_find_last", ""))
+        find_entry = tk.Entry(win, textvariable=find_var, width=36,
+                              bg=theme.get("elevated", theme["btn_bg"]), fg=theme["fg"],
+                              insertbackground=theme["fg"], relief=tk.FLAT)
+        find_entry.grid(row=0, column=1, columnspan=2, padx=10, pady=(12, 4), sticky="ew")
+
+        tk.Label(win, text="Replace:", bg=theme.get("surface", theme["toolbar_bg"]),
+                 fg=theme["fg"], font=("Segoe UI", 9)).grid(row=1, column=0, sticky="w", padx=10, pady=4)
+        repl_var = tk.StringVar(value=getattr(self, "_replace_last", ""))
+        repl_entry = tk.Entry(win, textvariable=repl_var, width=36,
+                              bg=theme.get("elevated", theme["btn_bg"]), fg=theme["fg"],
+                              insertbackground=theme["fg"], relief=tk.FLAT)
+        repl_entry.grid(row=1, column=1, columnspan=2, padx=10, pady=4, sticky="ew")
+
+        case_var = tk.BooleanVar(value=False)
+        tk.Checkbutton(win, text="Match case", variable=case_var,
+                       bg=theme.get("surface", theme["toolbar_bg"]), fg=theme["fg"],
+                       activebackground=theme.get("surface", theme["toolbar_bg"]),
+                       selectcolor=theme.get("elevated", theme["btn_bg"]),
+                       font=("Segoe UI", 9)).grid(row=2, column=1, sticky="w", padx=10, pady=4)
+
+        status = tk.Label(win, text="", bg=theme.get("surface", theme["toolbar_bg"]),
+                          fg=theme.get("fg_muted", theme["toolbar_fg"]), font=("Segoe UI", 8))
+        status.grid(row=3, column=0, columnspan=3, sticky="w", padx=10)
+
+        def _flags():
+            return 0 if case_var.get() else tk.IGNORECASE if False else 1  # use str methods
+
+        def find_next(from_start=False):
+            needle = find_var.get()
+            if not needle:
+                status.config(text="Enter text to find")
+                return
+            self._find_last = needle
+            self.notebook.select(0)  # Code tab
+            content = self.editor.get("1.0", "end-1c")
+            start_idx = "1.0" if from_start else self.editor.index(tk.INSERT)
+            # If selection matches, start after it
+            try:
+                if self.editor.tag_ranges("sel"):
+                    start_idx = self.editor.index("sel.last")
+            except Exception:
+                pass
+            pos = self.editor.search(needle, start_idx, stopindex=tk.END,
+                                     nocase=not case_var.get())
+            if not pos and start_idx != "1.0":
+                pos = self.editor.search(needle, "1.0", stopindex=tk.END,
+                                         nocase=not case_var.get())
+            if pos:
+                end = f"{pos}+{len(needle)}c"
+                self.editor.tag_remove("sel", "1.0", tk.END)
+                self.editor.tag_add("sel", pos, end)
+                self.editor.mark_set(tk.INSERT, end)
+                self.editor.see(pos)
+                self.editor.focus_set()
+                status.config(text=f"Found at {pos}")
+            else:
+                status.config(text="Not found")
+
+        def replace_one():
+            needle = find_var.get()
+            repl = repl_var.get()
+            self._replace_last = repl
+            if not needle:
+                return
+            try:
+                if self.editor.tag_ranges("sel"):
+                    sel = self.editor.get("sel.first", "sel.last")
+                    ok = sel == needle if case_var.get() else sel.lower() == needle.lower()
+                    if ok:
+                        self._push_undo_snapshot()
+                        self.editor.delete("sel.first", "sel.last")
+                        self.editor.insert(tk.INSERT, repl)
+                        self._mark_dirty(True)
+            except Exception:
+                pass
+            find_next()
+
+        def replace_all():
+            needle = find_var.get()
+            repl = repl_var.get()
+            self._find_last = needle
+            self._replace_last = repl
+            if not needle:
+                return
+            self.notebook.select(0)
+            content = self.editor.get("1.0", "end-1c")
+            if case_var.get():
+                count = content.count(needle)
+                new_content = content.replace(needle, repl)
+            else:
+                # case-insensitive replace
+                import re as _re
+                new_content, count = _re.subn(_re.escape(needle), lambda m: repl, content, flags=_re.IGNORECASE)
+            if count:
+                self._push_undo_snapshot()
+                self.editor.delete("1.0", tk.END)
+                self.editor.insert("1.0", new_content)
+                self._mark_dirty(True)
+                self.root.after(10, lambda: highlight(self.editor))
+                self.update_line_numbers()
+            status.config(text=f"Replaced {count} occurrence(s)")
+
+        btn_bg = theme.get("elevated", theme["btn_bg"])
+        bf = tk.Frame(win, bg=theme.get("surface", theme["toolbar_bg"]))
+        bf.grid(row=4, column=0, columnspan=3, pady=12, padx=10, sticky="e")
+        for lab, cmd in (("Find Next", lambda: find_next()),
+                         ("Replace", replace_one),
+                         ("Replace All", replace_all),
+                         ("Close", win.destroy)):
+            soft_button(bf, f"  {lab}  ", command=cmd,
+                        bg=theme["accent"] if lab == "Find Next" else btn_bg,
+                        fg="#ffffff" if lab == "Find Next" else theme["fg"],
+                        hover=theme.get("btn_hover", "#2c3648"), padx=10, pady=5).pack(side=tk.LEFT, padx=3)
+
+        find_entry.focus_set()
+        win.bind("<Return>", lambda e: find_next())
+        win.bind("<Escape>", lambda e: win.destroy())
+        win.protocol("WM_DELETE_WINDOW", lambda: (setattr(self, "_find_win", None), win.destroy()))
+        def _on_close():
+            self._find_win = None
+            win.destroy()
+        win.protocol("WM_DELETE_WINDOW", _on_close)
+
+    def _goto_designer_tab(self):
+        try:
+            if hasattr(self, "design_tab_index"):
+                self.notebook.tab(self.design_tab_index, state="normal")
+                self.notebook.select(self.design_tab_index)
+        except Exception:
+            pass
+
+    def _goto_form_tab(self):
+        try:
+            if hasattr(self, "form_tab_index"):
+                self.notebook.select(self.form_tab_index)
+                self._refresh_vform_tab()
+        except Exception:
+            pass
+
+    def _ensure_vform_from_code(self):
+        """If GUI project has no .vform, build designer from code and write .vform."""
+        if not self._is_gui_project():
+            messagebox.showinfo("Form", "Current unit does not look like a GUI project.")
+            return
+        try:
+            self._sync_from_code_impl()
+        except Exception as e:
+            self.status(f"Sync from code failed: {e}")
+        path = self.current_vform_path or self._vform_path_for_unit()
+        if not path:
+            messagebox.showinfo("Form", "Save the .vtx file first so a .vform path can be determined.")
+            return
+        try:
+            self._save_vform_disk_only(path)
+            self.current_vform_path = path
+            try:
+                self._ensure_vform_import_comment(path)
+            except Exception:
+                pass
+            self._refresh_vform_tab()
+            self.status(f"Generated {os.path.basename(path)} from code")
+            messagebox.showinfo("Form", f"Generated:\n{path}")
+        except Exception as e:
+            messagebox.showerror("Form", str(e))
+
+    def _refresh_vform_tab(self):
+        """Load current .vform JSON into the Form resource tab (generate if missing)."""
+        if not hasattr(self, "vform_text"):
+            return
+        path = self.current_vform_path or self._vform_path_for_unit()
+        text_body = ""
+        if path and os.path.isfile(path):
+            try:
+                with open(path, "r", encoding="utf-8") as f:
+                    text_body = f.read()
+                self.current_vform_path = path
+            except Exception as e:
+                text_body = f"{{ \"error\": \"{e}\" }}"
+        elif self._is_gui_project() and path:
+            # auto-generate from code
+            try:
+                self._sync_from_code_impl()
+                self._save_vform_disk_only(path)
+                self.current_vform_path = path
+                with open(path, "r", encoding="utf-8") as f:
+                    text_body = f.read()
+                try:
+                    self._ensure_vform_import_comment(path)
+                except Exception:
+                    pass
+            except Exception as e:
+                text_body = (
+                    '{ "format": "VertexForm", "note": "Could not generate from code", '
+                    f'"error": "{e}" }}'
+                )
+        else:
+            text_body = (
+                "{\n"
+                '  "format": "VertexForm",\n'
+                '  "note": "No GUI unit / no path — save a .vtx with Window() or open a GUI project"\n'
+                "}"
+            )
+        try:
+            self.vform_text.config(state=tk.NORMAL)
+            self.vform_text.delete("1.0", tk.END)
+            self.vform_text.insert("1.0", text_body)
+            self.vform_text.config(state=tk.DISABLED)
+        except Exception:
+            pass
+
+    def _setup_editor_context_menu(self):
+        """Right-click menu for the code editor."""
+        theme = THEMES.get(self.current_theme, THEMES["dark"])
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=theme.get("elevated", theme["btn_bg"]),
+                       fg=theme["fg"],
+                       activebackground=theme["accent"],
+                       activeforeground="#ffffff",
+                       bd=0)
+        menu.add_command(label="Undo", accelerator="Ctrl+Z", command=self.undo)
+        menu.add_command(label="Redo", accelerator="Ctrl+Y", command=self.redo)
+        menu.add_separator()
+        menu.add_command(label="Cut", accelerator="Ctrl+X", command=self.cut)
+        menu.add_command(label="Copy", accelerator="Ctrl+C", command=self.copy)
+        menu.add_command(label="Paste", accelerator="Ctrl+V", command=self.paste)
+        menu.add_separator()
+        menu.add_command(label="Select All", accelerator="Ctrl+A", command=self.select_all)
+        menu.add_separator()
+        menu.add_command(label="Find line…", command=self._ctx_goto_line)
+        menu.add_command(label="Compile", accelerator="F5", command=self.compile_file)
+        menu.add_command(label="Run", accelerator="F6", command=self.run_program)
+        self._editor_ctx_menu = menu
+
+        def show_menu(event):
+            try:
+                self.editor.focus_set()
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                try:
+                    menu.grab_release()
+                except Exception:
+                    pass
+            return "break"
+
+        self.editor.bind("<Button-3>", show_menu)
+        # macOS Ctrl-click
+        self.editor.bind("<Control-Button-1>", show_menu)
+
+    def _setup_output_context_menu(self):
+        """Right-click menu for the compilation / output pane."""
+        theme = THEMES.get(self.current_theme, THEMES["dark"])
+        menu = tk.Menu(self.root, tearoff=0,
+                       bg=theme.get("elevated", theme["btn_bg"]),
+                       fg=theme["fg"],
+                       activebackground=theme["accent"],
+                       activeforeground="#ffffff",
+                       bd=0)
+        menu.add_command(label="Copy", command=self._output_copy)
+        menu.add_command(label="Copy All", command=self._output_copy_all)
+        menu.add_separator()
+        menu.add_command(label="Select All", command=self._output_select_all)
+        menu.add_separator()
+        menu.add_command(label="Clear Output", command=self._output_clear)
+        self._output_ctx_menu = menu
+
+        def show_menu(event):
+            try:
+                # temporarily enable to allow selection ops
+                self.output_text.config(state=tk.NORMAL)
+                menu.tk_popup(event.x_root, event.y_root)
+            finally:
+                try:
+                    menu.grab_release()
+                except Exception:
+                    pass
+                try:
+                    self.output_text.config(state=tk.DISABLED)
+                except Exception:
+                    pass
+            return "break"
+
+        self.output_text.bind("<Button-3>", show_menu)
+        self.output_text.bind("<Control-Button-1>", show_menu)
+
+    def _ctx_goto_line(self):
+        from tkinter import simpledialog
+        try:
+            line = simpledialog.askinteger("Go to line", "Line number:", parent=self.root, minvalue=1)
+            if line:
+                self.editor.mark_set(tk.INSERT, f"{line}.0")
+                self.editor.see(f"{line}.0")
+                self.editor.focus_set()
+        except Exception:
+            pass
+
+    def _output_copy(self):
+        try:
+            self.output_text.config(state=tk.NORMAL)
+            try:
+                text = self.output_text.get("sel.first", "sel.last")
+            except Exception:
+                text = ""
+            if text:
+                self.root.clipboard_clear()
+                self.root.clipboard_append(text)
+            self.output_text.config(state=tk.DISABLED)
+        except Exception:
+            try:
+                self.output_text.config(state=tk.DISABLED)
+            except Exception:
+                pass
+
+    def _output_copy_all(self):
+        try:
+            self.output_text.config(state=tk.NORMAL)
+            text = self.output_text.get("1.0", "end-1c")
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.output_text.config(state=tk.DISABLED)
+            self.status("Output copied to clipboard")
+        except Exception:
+            try:
+                self.output_text.config(state=tk.DISABLED)
+            except Exception:
+                pass
+
+    def _output_select_all(self):
+        try:
+            self.output_text.config(state=tk.NORMAL)
+            self.output_text.tag_add("sel", "1.0", "end-1c")
+            self.output_text.mark_set(tk.INSERT, "1.0")
+            # leave enabled briefly so selection shows; next click/clear will disable
+            self.root.after(50, lambda: self.output_text.config(state=tk.DISABLED))
+        except Exception:
+            try:
+                self.output_text.config(state=tk.DISABLED)
+            except Exception:
+                pass
+
+    def _output_clear(self):
+        try:
+            self.output_text.config(state=tk.NORMAL)
+            self.output_text.delete("1.0", tk.END)
+            self.output_text.config(state=tk.DISABLED)
+            self.status("Output cleared")
+        except Exception:
+            pass
+
     def cut(self, event=None):
         try:
             self._push_undo_snapshot()
@@ -1630,11 +2088,12 @@ class VertexIDE:
             pass
         return "break"
 
-    def copy(self):
+    def copy(self, event=None):
         try:
             self.editor.event_generate("<<Copy>>")
         except Exception:
             pass
+        return "break"
 
     def paste(self, event=None):
         """Paste once only. Return 'break' so Tk does not paste a second time."""
@@ -2198,6 +2657,7 @@ class VertexIDE:
         _sep()
         _add("  Form  ", self.new_form, "#db2777", "#ffffff", "#ec4899", "New form")
         _add("  Sync  ", self.sync_from_code, "#4f46e5", "#ffffff", "#6366f1", "Sync from code")
+        _add("  Find  ", self.show_find_dialog, "#0d9488", "#ffffff", "#14b8a6", "Find / Replace (Ctrl+F)")
         _sep()
         if self.gui_mode:
             self.mode_btn = _add("  GUI  ", self.toggle_mode, "#1e3a5f", "#60a5fa", "#2563eb",
@@ -4070,6 +4530,8 @@ class VertexIDE:
                 tab_text = ""
             if "Explorer" in str(tab_text):
                 self.root.after(40, self._update_code_explorer)
+            if "vform" in str(tab_text).lower() or "Form (" in str(tab_text):
+                self.root.after(40, self._refresh_vform_tab)
         except Exception:
             pass
 
@@ -4485,11 +4947,28 @@ class VertexIDE:
             self.status(f"Loaded {os.path.basename(path)}")
             if looks_like_gui(content) or self.gui_mode:
                 vform = self._vform_path_for_unit(path)
-                self.current_vform_path = vform if vform and os.path.isfile(vform) else None
-                if self.current_vform_path:
+                if vform and os.path.isfile(vform):
+                    self.current_vform_path = vform
                     self.root.after(200, lambda: self.open_vform(self.current_vform_path))
-                elif self.config.get("auto_detect_gui", True):
-                    self.root.after(300, self.sync_from_code)
+                    self.root.after(250, self._refresh_vform_tab)
+                else:
+                    self.current_vform_path = vform
+                    # No .vform yet → sync designer from code and generate file
+                    def _auto_vform():
+                        try:
+                            self._sync_from_code_impl()
+                            if vform:
+                                self._save_vform_disk_only(vform)
+                                self.current_vform_path = vform
+                                try:
+                                    self._ensure_vform_import_comment(vform)
+                                except Exception:
+                                    pass
+                            self._refresh_vform_tab()
+                            self.status(f"Generated {os.path.basename(vform) if vform else '.vform'} from code")
+                        except Exception as ex:
+                            self.status(f"vform generate: {ex}")
+                    self.root.after(300, _auto_vform)
             else:
                 self.current_vform_path = None
             self.root.after(100, self._update_code_explorer)
@@ -4646,17 +5125,28 @@ class VertexIDE:
                 break
 
         py_interp = find_python_interpreter()
-        # Packaged IDE EXE: sys.executable is THIS app — never use it to run .py
-        use_build_script = bool(build_script and py_interp and not is_frozen())
-        if is_frozen() and build_script and py_interp:
-            # Frozen but system Python exists — OK to use build script with real python
-            use_build_script = True
-        if is_frozen() and not py_interp:
+        if py_interp and _looks_like_ide_exe(py_interp):
+            py_interp = None
+        if py_interp and os.path.abspath(py_interp) == os.path.abspath(sys.executable):
+            if is_frozen() or _looks_like_ide_exe(sys.executable):
+                py_interp = None
+
+        # CRITICAL: never "vertex_ide.exe vertex_build.py ..." (opens second IDE).
+        # Prefer direct vertexc + g++ whenever we are the IDE EXE.
+        running_as_ide_exe = is_frozen() or _looks_like_ide_exe(sys.executable)
+        use_build_script = bool(
+            build_script and py_interp and not running_as_ide_exe
+            and not _looks_like_ide_exe(py_interp)
+        )
+        if running_as_ide_exe:
             use_build_script = False
             self._append_output(
-                "Note: running as packaged EXE — using built-in vertexc/g++ path "
-                "(not vertex_build.py).\n", "info"
+                "Compile path: vertexc + g++ (IDE EXE — not spawning Python/IDE)\n", "info"
             )
+        elif use_build_script:
+            self._append_output(f"Build host Python: {py_interp}\n", "info")
+        else:
+            self._append_output("Compile path: vertexc + g++ (direct)\n", "info")
 
         try:
             if use_build_script:
@@ -4722,11 +5212,18 @@ class VertexIDE:
                     self._set_status_color("error")
                 return
 
-            # Fallback: inline build
+            # Fallback: inline build (vertexc → g++)
             env = os.environ.copy()
             gpp_dir = os.path.dirname(gpp_path)
             if gpp_dir:
                 env["PATH"] = gpp_dir + os.pathsep + env.get("PATH", "")
+            if _looks_like_ide_exe(vertexc):
+                raise RuntimeError(
+                    "vertexc_path points at the IDE executable. "
+                    "Set Settings → vertexc to vertexc.exe (compiler), not Vertex IDE."
+                )
+            if not vertexc or vertexc.strip() in (".", ""):
+                raise RuntimeError("vertexc_path is empty — set it in Settings.")
             self._run_command([vertexc, self.current_file], "vertexc", src_dir, env)
             cpp_candidates = [
                 os.path.join(src_dir, "output.cpp"),

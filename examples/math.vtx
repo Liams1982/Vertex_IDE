@@ -1,0 +1,152 @@
+{----------------------------------------------------------------------------}
+{ math.vtx – Vertex math library                                             }
+{----------------------------------------------------------------------------}
+Import <cmath>;
+
+Func Pi: Real;
+Run
+  Pi <- 3.141592653589793;
+Stop;
+
+Func Euler: Real;
+Run
+  Euler <- 2.718281828459045;
+Stop;
+
+Func Sin(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = sin(x);";
+  Sin <- r;
+Stop;
+
+Func Cos(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = cos(x);";
+  Cos <- r;
+Stop;
+
+Func Tan(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = tan(x);";
+  Tan <- r;
+Stop;
+
+Func Asin(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = asin(x);";
+  Asin <- r;
+Stop;
+
+Func Acos(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = acos(x);";
+  Acos <- r;
+Stop;
+
+Func Atan(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = atan(x);";
+  Atan <- r;
+Stop;
+
+Func Atan2(y: Real; x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = atan2(y, x);";
+  Atan2 <- r;
+Stop;
+
+Func Sqrt(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = sqrt(x);";
+  Sqrt <- r;
+Stop;
+
+Func Power(base: Real; exp: Real): Real;
+Var r: Real;
+Run
+  Asm "r = pow(base, exp);";
+  Power <- r;
+Stop;
+
+Func Exp(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = exp(x);";
+  Exp <- r;
+Stop;
+
+Func Ln(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = log(x);";
+  Ln <- r;
+Stop;
+
+Func Log10(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = log10(x);";
+  Log10 <- r;
+Stop;
+
+Func Abs(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = fabs(x);";
+  Abs <- r;
+Stop;
+
+Func Floor(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = floor(x);";
+  Floor <- r;
+Stop;
+
+Func Ceil(x: Real): Real;
+Var r: Real;
+Run
+  Asm "r = ceil(x);";
+  Ceil <- r;
+Stop;
+
+Func Hypot(x: Real; y: Real): Real;
+Var r: Real;
+Run
+  Asm "r = hypot(x, y);";
+  Hypot <- r;
+Stop;
+
+Func DegToRad(deg: Real): Real;
+Run
+  DegToRad <- deg * Pi() / 180.0;
+Stop;
+
+Func RadToDeg(rad: Real): Real;
+Run
+  RadToDeg <- rad * 180.0 / Pi();
+Stop;
+
+Func Min(a: Real; b: Real): Real;
+Run
+  If a < b Then
+    Min <- a
+  Else
+    Min <- b;
+Stop;
+
+Func Max(a: Real; b: Real): Real;
+Run
+  If a > b Then
+    Max <- a
+  Else
+    Max <- b;
+Stop;

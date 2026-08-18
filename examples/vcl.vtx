@@ -531,7 +531,8 @@ Run
   EnsureVCLClass();
   clsName <- "VertexVCLClass";
   title <- "Vertex Application";
-  Asm "MainWindow = CreateWindowExA(0, clsName.c_str(), title.c_str(), (DWORD)WS_OVERLAPPEDWINDOW, x, y, width, height, NULL, NULL, VCL_Instance, NULL);";
+  { width/height = client area (same as Form Designer). Expand to outer size. }
+  Asm "{ RECT rc; rc.left=0; rc.top=0; rc.right=width; rc.bottom=height; AdjustWindowRectEx(&rc, (DWORD)WS_OVERLAPPEDWINDOW, FALSE, 0); int ow = rc.right-rc.left; int oh = rc.bottom-rc.top; MainWindow = CreateWindowExA(0, clsName.c_str(), title.c_str(), (DWORD)WS_OVERLAPPEDWINDOW, x, y, ow, oh, NULL, NULL, VCL_Instance, NULL); }";
   NextControlID <- 1001;
   TimerHandler <- 0;
   PaintHandler <- 0;
