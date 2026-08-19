@@ -25,6 +25,8 @@ DEFAULT_CONFIG = {
     "auto_detect_gui": True,
     "sidebar_width": 280,
     "palette_height": 280,
+    "default_icon": "",
+    "embed_icon": True,
 }
 
 def load_config():
@@ -636,6 +638,62 @@ def find_python_interpreter():
         if os.path.isfile(ap) or shutil.which(cand):
             return ap if os.path.isfile(ap) else cand
     return None
+
+
+
+def find_windres(gpp_path):
+    import shutil
+    if gpp_path:
+        d = os.path.dirname(os.path.abspath(gpp_path))
+        for name in ("windres.exe", "windres"):
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand):
+                return cand
+    return shutil.which("windres") or shutil.which("windres.exe")
+
+
+def resolve_project_icon(src_path, default_icon=""):
+    """Prefer unit.ico / app.ico next to source, else Settings default_icon."""
+    if not src_path:
+        return None
+    src_dir = os.path.dirname(os.path.abspath(src_path)) or "."
+    base = os.path.splitext(os.path.basename(src_path))[0]
+    for name in (base + ".ico", "app.ico", "icon.ico", "default.ico"):
+        pth = os.path.join(src_dir, name)
+        if os.path.isfile(pth):
+            return pth
+    if default_icon and os.path.isfile(default_icon):
+        return default_icon
+    return None
+
+
+def build_icon_object(ico_path, out_dir, gpp_path, env=None):
+    """Compile .ico to COFF object via windres. Returns (obj_path|None, log)."""
+    if not ico_path or not os.path.isfile(ico_path):
+        return None, "no icon"
+    windres = find_windres(gpp_path)
+    if not windres:
+        return None, "windres not found (place next to g++, e.g. msys64/ucrt64/bin/windres.exe)"
+    os.makedirs(out_dir, exist_ok=True)
+    rc_path = os.path.join(out_dir, "_vertex_app_icon.rc")
+    obj_path = os.path.join(out_dir, "_vertex_app_icon.o")
+    ico_esc = os.path.abspath(ico_path).replace("\\", "/")
+    try:
+        with open(rc_path, "w", encoding="utf-8") as f:
+            f.write('IDI_ICON1 ICON "%s"\n' % ico_esc)
+    except Exception as e:
+        return None, str(e)
+    try:
+        proc = subprocess.run(
+            [windres, rc_path, "-O", "coff", "-o", obj_path],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
+            cwd=out_dir, env=env,
+        )
+        if proc.returncode != 0 or not os.path.isfile(obj_path):
+            return None, (proc.stdout or ("windres exit %s" % proc.returncode)).strip()
+        return obj_path, "Icon embedded: %s" % ico_path
+    except Exception as e:
+        return None, str(e)
 
 
 def highlight(text_widget):
@@ -5398,6 +5456,13 @@ class VertexIDE:
                 ]
                 if not static:
                     cmd.append("--no-static")
+                if self.config.get("embed_icon", True):
+                    ico = resolve_project_icon(
+                        self.current_file, self.config.get("default_icon", ""))
+                    if ico:
+                        cmd += ["--icon", ico]
+                else:
+                    cmd.append("--no-icon")
                 self._append_output(f"> {' '.join(cmd)}\n", "info")
                 self.root.update()
                 proc = subprocess.run(
@@ -5480,7 +5545,17 @@ class VertexIDE:
                     cpp_path = dest_cpp
                 except Exception:
                     pass
-            cmd = [gpp_path, "-O2", "-std=c++17", cpp_path, "-o", exe_path]
+            icon_obj = None
+            if self.config.get("embed_icon", True):
+                ico = resolve_project_icon(
+                    self.current_file, self.config.get("default_icon", ""))
+                if ico:
+                    icon_obj, ilog = build_icon_object(ico, out_dir, gpp_path, env)
+                    self._append_output((ilog or "") + "\n", "info" if icon_obj else "error")
+            cmd = [gpp_path, "-O2", "-std=c++17", cpp_path]
+            if icon_obj:
+                cmd.append(icon_obj)
+            cmd += ["-o", exe_path]
             if use_gui:
                 cmd += ["-mwindows"]
                 if static:
@@ -5489,7 +5564,7 @@ class VertexIDE:
             else:
                 if static:
                     cmd += ["-static", "-static-libgcc", "-static-libstdc++"]
-            self._append_output(f"\nLink: {' '.join(cmd)}\n", "info")
+            self._append_output("Link: " + " ".join(cmd) + "\n", "info")
             self._run_command(cmd, "g++", out_dir, env)
             if os.path.exists(exe_path):
                 self._last_exe_path = os.path.abspath(exe_path)
@@ -5576,7 +5651,7 @@ class VertexIDE:
         theme = THEMES[self.current_theme]
         win = tk.Toplevel(self.root)
         win.title("Settings")
-        win.geometry("560x280")
+        win.geometry("560x380")
         win.transient(self.root)
         win.grab_set()
         win.configure(bg=theme["bg"])
@@ -5598,30 +5673,47 @@ class VertexIDE:
         e_out = tk.Entry(frame, width=42, bg=theme["line_bg"], fg=theme["fg"])
         e_out.insert(0, self.config.get("output_dir", "."))
         row(2, "Output:", e_out, lambda: self._browse_dir(e_out))
+        e_ico = tk.Entry(frame, width=42, bg=theme["line_bg"], fg=theme["fg"])
+        e_ico.insert(0, self.config.get("default_icon", ""))
+        row(3, "Default icon:", e_ico, lambda: self._browse_icon(e_ico))
         static_var = tk.BooleanVar(value=self.config.get("static_linking", True))
         tk.Checkbutton(frame, text="Static linking", variable=static_var,
                        bg=theme["bg"], fg=theme["fg"], selectcolor=theme["line_bg"]).grid(
-            row=3, column=0, columnspan=2, sticky=tk.W)
+            row=4, column=0, columnspan=2, sticky=tk.W)
         auto_var = tk.BooleanVar(value=self.config.get("auto_detect_gui", True))
         tk.Checkbutton(frame, text="Auto-detect GUI", variable=auto_var,
                        bg=theme["bg"], fg=theme["fg"], selectcolor=theme["line_bg"]).grid(
-            row=4, column=0, columnspan=2, sticky=tk.W)
+            row=5, column=0, columnspan=2, sticky=tk.W)
+        embed_var = tk.BooleanVar(value=self.config.get("embed_icon", True))
+        tk.Checkbutton(frame, text="Embed EXE icon when .ico found", variable=embed_var,
+                       bg=theme["bg"], fg=theme["fg"], selectcolor=theme["line_bg"]).grid(
+            row=6, column=0, columnspan=2, sticky=tk.W)
 
         def save():
             self.config["vertexc_path"] = e_vc.get().strip()
             self.config["gpp_path"] = e_gpp.get().strip()
             self.config["output_dir"] = e_out.get().strip() or "."
+            self.config["default_icon"] = e_ico.get().strip()
             self.config["static_linking"] = static_var.get()
             self.config["auto_detect_gui"] = auto_var.get()
+            self.config["embed_icon"] = embed_var.get()
             save_config(self.config)
             win.destroy()
             self.status("Settings saved")
 
         tk.Button(frame, text="Save", command=save, bg=theme["btn_bg"],
-                  fg=theme["btn_fg"], relief=tk.FLAT, padx=16).grid(row=5, column=1, sticky=tk.E, pady=10)
+                  fg=theme["btn_fg"], relief=tk.FLAT, padx=16).grid(row=7, column=1, sticky=tk.E, pady=10)
 
     def _browse_file(self, entry):
         path = filedialog.askopenfilename()
+        if path:
+            entry.delete(0, tk.END)
+            entry.insert(0, path)
+
+    def _browse_icon(self, entry):
+        path = filedialog.askopenfilename(
+            title="Select EXE icon",
+            filetypes=[("Icon files", "*.ico"), ("All files", "*.*")])
         if path:
             entry.delete(0, tk.END)
             entry.insert(0, path)

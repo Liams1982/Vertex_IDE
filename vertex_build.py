@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
-"""vertex_build.py - Build Vertex programs; JSON result for the IDE."""
-import sys, json, subprocess, os, re, argparse
+"""vertex_build.py - Build Vertex programs; JSON result for the IDE.
+Supports optional EXE icon via .ico / .rc + windres.
+"""
+import sys, json, subprocess, os, re, argparse, shutil, tempfile
+
 
 def run_cmd(cmd, cwd=None, env=None):
     try:
@@ -14,6 +17,7 @@ def run_cmd(cmd, cwd=None, env=None):
     except Exception as e:
         return 1, str(e)
 
+
 def parse_vertexc_errors(text):
     errors = []
     for line in text.splitlines():
@@ -26,6 +30,7 @@ def parse_vertexc_errors(text):
                            "message": msg, "raw_line": line.strip()})
     return errors
 
+
 def parse_gpp_errors(text):
     errors = []
     for line in text.splitlines():
@@ -34,6 +39,61 @@ def parse_gpp_errors(text):
             errors.append({"stage": "gpp", "line": int(m.group(2)), "file": m.group(1),
                            "message": m.group(3), "raw_line": line.strip()})
     return errors
+
+
+def find_windres(gpp_path):
+    """windres next to g++ or on PATH."""
+    if gpp_path:
+        d = os.path.dirname(os.path.abspath(gpp_path))
+        for name in ("windres.exe", "windres"):
+            cand = os.path.join(d, name)
+            if os.path.isfile(cand):
+                return cand
+    return shutil.which("windres") or shutil.which("windres.exe")
+
+
+def resolve_icon(src_dir, out_dir, icon_arg):
+    """
+    Priority:
+      1) --icon path
+      2) <source_basename>.ico next to .vtx
+      3) app.ico in source dir
+      4) icon.ico in source dir
+    Returns absolute path to .ico or None.
+    """
+    candidates = []
+    if icon_arg:
+        candidates.append(icon_arg)
+        if not os.path.isabs(icon_arg):
+            candidates.append(os.path.join(src_dir, icon_arg))
+            candidates.append(os.path.join(out_dir, icon_arg))
+    # project-local names checked by caller via base name too
+    for c in candidates:
+        if c and os.path.isfile(c):
+            return os.path.abspath(c)
+    return None
+
+
+def build_icon_object(ico_path, out_dir, windres, env):
+    """Create COFF object from .ico via a temp .rc. Returns path to .o or (None, log)."""
+    if not windres:
+        return None, "windres not found (install MinGW windres next to g++)"
+    if not ico_path or not os.path.isfile(ico_path):
+        return None, "icon file missing"
+    rc_path = os.path.join(out_dir, "_vertex_app_icon.rc")
+    obj_path = os.path.join(out_dir, "_vertex_app_icon.o")
+    # Escape backslashes for rc
+    ico_esc = os.path.abspath(ico_path).replace("\\", "/")
+    try:
+        with open(rc_path, "w", encoding="utf-8") as f:
+            f.write(f'IDI_ICON1 ICON "{ico_esc}"\n')
+    except Exception as e:
+        return None, f"could not write rc: {e}"
+    rc, out = run_cmd([windres, rc_path, "-O", "coff", "-o", obj_path], cwd=out_dir, env=env)
+    if rc != 0 or not os.path.isfile(obj_path):
+        return None, out or f"windres exited {rc}"
+    return obj_path, out
+
 
 def main():
     ap = argparse.ArgumentParser()
@@ -44,6 +104,8 @@ def main():
     ap.add_argument("--gpp", default="g++")
     ap.add_argument("--static", action="store_true", default=True)
     ap.add_argument("--no-static", dest="static", action="store_false")
+    ap.add_argument("--icon", default="", help="Path to .ico for the EXE (optional)")
+    ap.add_argument("--no-icon", action="store_true", help="Do not embed any icon")
     args = ap.parse_args()
 
     src = os.path.abspath(args.source)
@@ -52,7 +114,6 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     base = os.path.splitext(os.path.basename(src))[0]
     exe = os.path.join(out_dir, base + (".exe" if os.name == "nt" else ""))
-
     mode = args.mode
     if mode == "auto":
         try:
@@ -90,7 +151,6 @@ def main():
                                       "message": "output.cpp not generated", "raw_line": ""}],
                           "raw_output": out, "mode": mode, "executable": None}))
         return 1
-
     dest = os.path.join(out_dir, "output.cpp")
     if os.path.abspath(cpp) != os.path.abspath(dest):
         try:
@@ -99,8 +159,31 @@ def main():
         except Exception:
             pass
 
-    # 2) g++
-    cmd = [args.gpp, "-O2", "-std=c++17", cpp, "-o", exe]
+    # 2) optional icon
+    icon_log = ""
+    icon_obj = None
+    if not args.no_icon:
+        ico = resolve_icon(src_dir, out_dir, args.icon)
+        if not ico:
+            # project defaults
+            for name in (base + ".ico", "app.ico", "icon.ico", "default.ico"):
+                p = os.path.join(src_dir, name)
+                if os.path.isfile(p):
+                    ico = p
+                    break
+        if ico:
+            windres = find_windres(args.gpp)
+            icon_obj, icon_log = build_icon_object(ico, out_dir, windres, env)
+            if not icon_obj:
+                icon_log = f"Icon skipped: {icon_log}"
+            else:
+                icon_log = f"Icon: {ico} -> {icon_obj}"
+
+    # 3) g++
+    cmd = [args.gpp, "-O2", "-std=c++17", cpp]
+    if icon_obj:
+        cmd.append(icon_obj)
+    cmd += ["-o", exe]
     if mode == "gui":
         cmd += ["-mwindows"]
         if args.static:
@@ -111,27 +194,26 @@ def main():
             cmd += ["-static", "-static-libgcc", "-static-libstdc++"]
 
     rc, gout = run_cmd(cmd, cwd=out_dir, env=env)
-    combined = (out + "\n" + gout).strip()
+    combined = (out + "\n" + (icon_log + "\n" if icon_log else "") + gout).strip()
     if rc != 0:
         errs = parse_gpp_errors(gout)
         if not errs:
-            # show first non-empty lines so IDE is not blank
             lines = [ln for ln in gout.splitlines() if ln.strip()]
             msg = lines[0] if lines else f"g++ exited {rc} (no error text captured)"
             errs = [{"stage": "gpp", "line": None, "file": None,
                      "message": msg, "raw_line": msg}]
-            # attach more context
             if len(lines) > 1:
                 errs[0]["message"] = " | ".join(lines[:5])
         print(json.dumps({"success": False, "stage": "gpp", "errors": errs,
                           "raw_output": combined, "mode": mode, "executable": None,
-                          "gpp_cmd": cmd}))
+                          "gpp_cmd": cmd, "icon": icon_log}))
         return 1
 
     print(json.dumps({"success": True, "stage": "done", "errors": [],
                       "raw_output": combined, "mode": mode, "executable": exe,
-                      "gpp_cmd": cmd}))
+                      "gpp_cmd": cmd, "icon": icon_log}))
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())
