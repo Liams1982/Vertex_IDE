@@ -473,12 +473,11 @@ Run
     wc.cbClsExtra <- 0;
     wc.cbWndExtra <- 0;
     wc.hInstance <- inst;
-    wc.hIcon <- LoadIconA(NULL, IDI_APPLICATION);
+    Asm "{ HICON hi = (HICON)LoadImageA(inst, MAKEINTRESOURCEA(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE); if (!hi) hi = LoadIconA(NULL, IDI_APPLICATION); wc.hIcon = hi; wc.hIconSm = hi; }";
     wc.hCursor <- LoadCursorA(NULL, IDC_ARROW);
     wc.hbrBackground <- GetSysColorBrush(COLOR_BTNFACE);
     wc.lpszMenuName <- NULL;
     Asm "wc.lpszClassName = clsName.c_str();";
-    wc.hIconSm <- LoadIconA(NULL, IDI_APPLICATION);
     atom <- RegisterClassExA(@wc);
     VCL_ClassRegistered <- 1;
   Stop;
@@ -513,6 +512,7 @@ Run
   CanvasY <- 0;
   If MainWindow <> 0 Then
   Run
+    Asm "{ HICON hi = (HICON)LoadImageA(VCL_Instance, MAKEINTRESOURCEA(1), IMAGE_ICON, 0, 0, LR_DEFAULTSIZE); if (hi) { SendMessageA(MainWindow, WM_SETICON, ICON_BIG, (LPARAM)hi); SendMessageA(MainWindow, WM_SETICON, ICON_SMALL, (LPARAM)hi); } }";
     ShowWindow(MainWindow, SW_SHOW);
     UpdateWindow(MainWindow);
   Stop;

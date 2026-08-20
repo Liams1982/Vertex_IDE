@@ -574,6 +574,25 @@ def section_header(parent, title, theme):
 
 
 # ---------- Helpers ----------
+
+def _win_hide_kwargs():
+    """Prevent black cmd windows when IDE EXE runs vertexc / g++ / windres."""
+    if sys.platform != "win32":
+        return {}
+    kw = {}
+    try:
+        kw["creationflags"] = getattr(subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    except Exception:
+        kw["creationflags"] = 0x08000000
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kw["startupinfo"] = si
+    except Exception:
+        pass
+    return kw
+
 def is_frozen():
     """True when running as PyInstaller / cx_Freeze / etc. packaged EXE."""
     return bool(getattr(sys, "frozen", False) or hasattr(sys, "_MEIPASS"))
@@ -680,14 +699,14 @@ def build_icon_object(ico_path, out_dir, gpp_path, env=None):
     ico_esc = os.path.abspath(ico_path).replace("\\", "/")
     try:
         with open(rc_path, "w", encoding="utf-8") as f:
-            f.write('IDI_ICON1 ICON "%s"\n' % ico_esc)
+            f.write('1 ICON "%s"\n' % ico_esc)
     except Exception as e:
         return None, str(e)
     try:
         proc = subprocess.run(
             [windres, rc_path, "-O", "coff", "-o", obj_path],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
-            cwd=out_dir, env=env,
+            cwd=out_dir, env=env, **_win_hide_kwargs(),
         )
         if proc.returncode != 0 or not os.path.isfile(obj_path):
             return None, (proc.stdout or ("windres exit %s" % proc.returncode)).strip()
@@ -5391,7 +5410,7 @@ class VertexIDE:
         if os.path.exists(exe_path) and sys.platform == "win32":
             try:
                 subprocess.run(["taskkill", "/F", "/IM", exe_name],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3)
+                               stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=3, **_win_hide_kwargs())
             except Exception:
                 pass
 
@@ -5467,7 +5486,7 @@ class VertexIDE:
                 self.root.update()
                 proc = subprocess.run(
                     cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                    text=True, cwd=src_dir
+                    text=True, cwd=src_dir, **_win_hide_kwargs()
                 )
                 raw = (proc.stdout or "") + (proc.stderr or "")
                 result = None
@@ -5595,8 +5614,9 @@ class VertexIDE:
     def _run_command(self, cmd, name, cwd=None, env=None):
         self._append_output(f"\n> {' '.join(cmd)}\n", "info")
         self.root.update()
+        hide = _win_hide_kwargs()
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                text=True, bufsize=1, cwd=cwd, env=env)
+                                text=True, bufsize=1, cwd=cwd, env=env, **hide)
         for line in proc.stdout:
             tag = "error" if any(k in line.lower() for k in ("error","failed","undefined")) else None
             self._append_output(line, tag)

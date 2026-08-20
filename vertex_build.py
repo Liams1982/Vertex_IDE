@@ -5,11 +5,30 @@ Supports optional EXE icon via .ico / .rc + windres.
 import sys, json, subprocess, os, re, argparse, shutil, tempfile
 
 
+def _win_hide_kwargs():
+    """Hide console windows for vertexc/g++/windres when launched from GUI."""
+    if sys.platform != "win32":
+        return {}
+    kw = {}
+    try:
+        kw["creationflags"] = subprocess.CREATE_NO_WINDOW  # 0x08000000
+    except AttributeError:
+        kw["creationflags"] = 0x08000000
+    try:
+        si = subprocess.STARTUPINFO()
+        si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        si.wShowWindow = 0  # SW_HIDE
+        kw["startupinfo"] = si
+    except Exception:
+        pass
+    return kw
+
+
 def run_cmd(cmd, cwd=None, env=None):
     try:
         proc = subprocess.run(
             cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=cwd, env=env
+            text=True, cwd=cwd, env=env, **_win_hide_kwargs()
         )
         return proc.returncode, proc.stdout or ""
     except FileNotFoundError as e:
@@ -86,7 +105,7 @@ def build_icon_object(ico_path, out_dir, windres, env):
     ico_esc = os.path.abspath(ico_path).replace("\\", "/")
     try:
         with open(rc_path, "w", encoding="utf-8") as f:
-            f.write(f'IDI_ICON1 ICON "{ico_esc}"\n')
+            f.write(f'1 ICON "{ico_esc}"\n')
     except Exception as e:
         return None, f"could not write rc: {e}"
     rc, out = run_cmd([windres, rc_path, "-O", "coff", "-o", obj_path], cwd=out_dir, env=env)
